@@ -102,9 +102,36 @@ Two dependencies that look inevitable are not:
 - **boto3 and the AWS CLI are unnecessary** — anonymous `ListObjectsV2` over
   plain HTTPS returns keys, sizes, and ETags from the stdlib. Verified.
 
-That leaves `pydantic`, `ruamel.yaml`, and `click`, all pure Python. CI installs
-in seconds instead of compiling htslib, with no binary-wheel platform risk. Worth
-protecting deliberately: adding pysam later for one convenience forfeits it.
+That leaves `ruamel.yaml` and `click`, both pure Python. CI installs in seconds
+instead of compiling htslib, with no binary-wheel platform risk. Worth protecting
+deliberately: adding pysam later for one convenience forfeits it.
+
+**pydantic came out too.** An earlier draft of this document listed it, but the
+models are plain dataclasses instead. The loaders must be *tolerant* — a
+malformed sample sheet has to come back with its problems described so a tool can
+report them, not raise on the first bad row — and validation-on-construction is
+precisely the wrong behaviour for that. Schema checking lives in the loaders,
+which already have to collect issues rather than throw; the models stay dumb
+containers.
+
+### Round-trip YAML, and the boolean wrinkle
+
+The configs are heavily commented, and `congen readme` writes into
+congen-metadata, so `core.metadata` standardizes on `ruamel.yaml` round-trip mode:
+comments, key order and quoting all survive a rewrite.
+
+One thing it cannot do, found while building it: **ruamel always emits YAML
+booleans lowercase**, and these configs mix styles within a single file
+(`generate_bed_file: True` beside `enabled: true`). Left alone, changing one value
+would produce a diff on every boolean line in the file, burying the real change.
+`ScalarBoolean` does not help — ruamel does not retain the original spelling.
+
+So `writers.dump_yaml_preserving(original, data)` pairs the dump with a pass that
+restores the original spelling, and does it conservatively: only where every
+occurrence of that key at that indent agreed in the original, so an
+already-inconsistent key keeps ruamel's form. `True` and `true` are the same YAML
+scalar, so the rewrite is cosmetic by definition. With it, all 79 configs
+round-trip byte-identically; without it, 78 of 79 do not.
 
 ### Findings framework
 

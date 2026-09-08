@@ -1,0 +1,36 @@
+samples: "config/stuVul.csv"
+reference:
+  name: "GCF_001447265.1"
+  source: "GCF_001447265.1"
+
+reads:
+  mark_duplicates: true
+
+variant_calling:
+  expected_coverage: "low"
+  tool: "gatk"
+  ploidy: 2
+
+callable_sites:
+  generate_bed_file: true
+  coverage:
+    enabled: true
+    fraction: 0.80  # fraction of samples that must be callable
+    min_coverage: auto  # "auto" = floor(mean_depth / 2)
+    max_coverage: auto  # "auto" = ceil(mean_depth * 2)
+    merge_distance: 100
+  mappability:
+    enabled: true
+    kmer: 150
+    min_score: 1  # 1 = uniquely mappable only
+    merge_distance: 100
+
+modules:
+  qc:
+    enabled: true  # <-- interactive QC dashboard
+    clusters: 3  # number of k-means clusters for PCA
+    min_depth: 2  # exclude samples below this depth from QC
+  postprocess:
+    enabled: true  # <-- sample exclusion and site filtering
+    filtering:
+      contig_size: 10000  # exclude contigs smaller than this (bp)

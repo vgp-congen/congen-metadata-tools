@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "congen-metadata-tools"
+version = "0.1.0"
+description = "Tools for VGP Conservation Genomics metadata"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+    # Deliberately minimal and pure-Python: no pysam (headers are read via
+    # HTTP Range + zlib) and no boto3 (S3 listing is anonymous ListObjectsV2
+    # over stdlib HTTPS). See docs/validator-design.md.
+    "ruamel.yaml>=0.18",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+congen = "congen.core.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The suite must run offline. Tests that would touch the network are marked
+# and deselected by default.
+addopts = "-m 'not network'"
+markers = [
+    "network: hits GenomeArk/NCBI/ENA; excluded by default, run with -m network",
+]
