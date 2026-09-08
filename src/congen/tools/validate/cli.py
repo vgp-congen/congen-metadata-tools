@@ -66,6 +66,11 @@ def _split(values: tuple[str, ...]) -> list[str] | None:
     help="Percent of assembly bases that may be absent from a VCF before F009 warns.",
 )
 @click.option("--workers", type=int, default=DEFAULT_WORKERS, show_default=True)
+@click.option(
+    "--check-sra",
+    is_flag=True,
+    help="Also validate sheet accessions against NCBI SRA (tier 5).",
+)
 @click.option("--no-cache", is_flag=True, help="Bypass the on-disk cache.")
 @click.option("--list-checks", is_flag=True, help="Print the check catalog and exit.")
 def validate(
@@ -84,6 +89,7 @@ def validate(
     bam_sample: int,
     missing_contig_threshold: float,
     workers: int,
+    check_sra: bool,
     no_cache: bool,
     list_checks: bool,
 ) -> None:
@@ -119,7 +125,9 @@ def validate(
         all_bams=all_bams,
         missing_contig_threshold=missing_contig_threshold,
     )
-    options = RunOptions(only=_split(only), skip=_split(skip), workers=workers)
+    options = RunOptions(
+        only=_split(only), skip=_split(skip), workers=workers, check_sra=check_sra
+    )
     if not selected_checks(options):
         raise click.UsageError(
             "--only/--skip selected no checks; run --list-checks to see the catalog"

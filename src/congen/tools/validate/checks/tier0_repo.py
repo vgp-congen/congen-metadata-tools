@@ -154,41 +154,6 @@ def srr_inputs_are_sra_accessions(context: Context) -> list[Finding]:
 
 
 @check(
-    id="R017",
-    tier="R",
-    severity=Severity.WARN,
-    summary="srr inputs name runs rather than experiments",
-    needs=(SHEET,),
-)
-def srr_inputs_prefer_runs(context: Context) -> list[Finding]:
-    """Experiment accessions resolve, but they are not precise.
-
-    An SRA experiment can contain more than one run, so an SRX in the
-    sheet does not pin down exactly which reads were used. Valid input,
-    worth surfacing.
-    """
-    offenders = [row for row in context.sheet.rows if row.is_experiment_accession]
-    if not offenders:
-        return []
-    samples = sorted({row.sample_id for row in offenders})
-    shown = ", ".join(samples[:3])
-    more = f" (+{len(samples) - 3} more)" if len(samples) > 3 else ""
-    return [
-        Finding(
-            id="R017",
-            severity=Severity.WARN,
-            subject=context.subject,
-            message=(
-                f"{len(offenders)} input(s) across {len(samples)} sample(s) are SRA "
-                "experiment accessions, not run accessions"
-            ),
-            detail=f"{shown}{more}; an experiment can expand to several runs",
-            location=Location(context.sheet.path, offenders[0].line),
-        )
-    ]
-
-
-@check(
     id="R015",
     tier="R",
     severity=Severity.WARN,

@@ -7,4 +7,5 @@ from congen.tools.validate.checks import (  # noqa: F401
     tier3a_reference,
     tier3b_canonical,
     tier4_provenance,
+    tier5_sra,
 )

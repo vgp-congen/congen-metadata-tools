@@ -26,6 +26,7 @@ from congen.core.remote.genomeark import AccessionInventory, GenomeArk
 from congen.core.remote.headers import BamHeader, VcfHeader, read_bam_header, read_vcf_header
 from congen.core.remote.ncbi import AssemblyInfo, AssemblyReport, Ncbi
 from congen.core.remote.qc import ContigMap, parse_contig_map
+from congen.core.remote.sra import RunIndex, Sra
 from congen.core.status import PublicationState, UploadStatus, build_upload_status
 
 # Slice names. Checks reference these in `needs=(...)`.
@@ -41,6 +42,7 @@ S3_SHEET = "s3_sheet"
 NCBI = "ncbi"
 ASSEMBLY_REPORT = "assembly_report"
 CONTIG_MAP = "contig_map"
+SRA = "sra"
 
 RAW_VCF = "raw.vcf.gz"
 FILTERED_VCF = "filtered.vcf.gz"
@@ -80,6 +82,7 @@ class Context:
     ncbi_info: AssemblyInfo | None = None
     assembly_report: AssemblyReport | None = None
     contig_map: ContigMap | None = None
+    sra: RunIndex | None = None
     #: Publication state. Always set, even when nothing is published.
     upload_status: UploadStatus | None = None
 
@@ -136,6 +139,7 @@ class ContextGatherer:
         cache: Cache | None = None,
         genomeark: GenomeArk | None = None,
         ncbi: Ncbi | None = None,
+        sra: Sra | None = None,
         bam_sample: int = DEFAULT_BAM_SAMPLE,
         all_bams: bool = False,
         missing_contig_threshold: float = DEFAULT_MISSING_THRESHOLD,
@@ -144,6 +148,7 @@ class ContextGatherer:
         self.cache = cache or Cache()
         self.genomeark = genomeark or GenomeArk(self.cache)
         self.ncbi = ncbi or Ncbi(self.cache)
+        self.sra = sra or Sra(self.cache)
         self.bam_sample = bam_sample
         self.all_bams = all_bams
         self.missing_contig_threshold = missing_contig_threshold
@@ -174,6 +179,8 @@ class ContextGatherer:
             context.vgp_entry = vgp_list.by_slug(species.slug)
             context.available.add(VGP)
 
+        if SRA in required:
+            self._gather_sra(context)
         if required & {NCBI, ASSEMBLY_REPORT}:
             self._gather_ncbi(context)
         if ASSEMBLY_REPORT in required:
@@ -189,6 +196,13 @@ class ContextGatherer:
         }
         if needs_s3:
             self._gather_s3(context, required)
+
+        # Only claim a publication state when GenomeArk was actually
+        # consulted. Reporting "absent" because a check selection never
+        # asked about S3 would be a lie about the data rather than a
+        # description of it.
+        if not needs_s3:
+            return context
 
         context.upload_status = build_upload_status(
             subject=context.subject,
@@ -213,6 +227,20 @@ class ContextGatherer:
         if info:
             context.ncbi_info = info
             context.available.add(NCBI)
+
+    def _gather_sra(self, context: Context) -> None:
+        """Resolve every SRA accession the sheet names, in batches."""
+        accessions = {
+            row.input for row in context.species.sheet.rows if row.is_sra_accession
+        }
+        if not accessions:
+            return
+        try:
+            context.sra = self.sra.lookup(accessions)
+        except Exception as exc:  # noqa: BLE001 - reported, not fatal
+            context.gather_notes.append(f"SRA lookup failed: {exc}")
+            return
+        context.available.add(SRA)
 
     def _gather_assembly_report(self, context: Context) -> None:
         accession = context.declared_accession

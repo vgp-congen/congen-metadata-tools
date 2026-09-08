@@ -148,3 +148,68 @@ class TestRequestBehaviour:
     def test_invalid_ranges_are_rejected(self, start, end):
         with pytest.raises(ValueError, match="invalid range"):
             http.range_get("http://x", start, end)
+
+
+class TestHostRateLimiting:
+    """NCBI eutils refuses above 3/s anonymously; measured 3 of 12 unpaced."""
+
+    def test_eutils_is_paced_and_genomeark_is_not(self):
+        assert http._limiter_for("https://eutils.ncbi.nlm.nih.gov/entrez/x") is not None
+        assert http._limiter_for("https://genomeark.s3.amazonaws.com/x") is None
+        assert http._limiter_for("https://ftp.ncbi.nlm.nih.gov/genomes/x") is None
+
+    def test_successive_acquires_space_out(self):
+        limiter = http._RateLimiter(per_second=3.0)
+        waits: list[float] = []
+        for _ in range(4):
+            limiter.acquire(sleep=waits.append)
+        assert waits[0] == pytest.approx(1 / 3, abs=0.05)
+        assert waits[-1] == pytest.approx(1.0, abs=0.05)
+
+    def test_a_zero_limit_never_waits(self):
+        limiter = http._RateLimiter(per_second=0)
+        waits: list[float] = []
+        limiter.acquire(sleep=waits.append)
+        assert waits == []
+
+    def test_an_api_key_raises_the_cap(self, monkeypatch):
+        monkeypatch.setenv("NCBI_API_KEY", "k")
+        assert http.ncbi_api_key() == "k"
+        assert http._limiter_for("https://eutils.ncbi.nlm.nih.gov/x").min_interval == 0.1
+
+    def test_no_key_returns_none(self, monkeypatch):
+        monkeypatch.delenv("NCBI_API_KEY", raising=False)
+        assert http.ncbi_api_key() is None
+
+    def test_a_blank_key_is_treated_as_absent(self, monkeypatch):
+        monkeypatch.setenv("NCBI_API_KEY", "   ")
+        assert http.ncbi_api_key() is None
+
+    def test_request_paces_before_each_attempt(self, monkeypatch):
+        http.set_host_rate_limit("paced.example", 2.0)
+        waits: list[float] = []
+
+        def urlopen(req, timeout=None):
+            return FakeResponse(b"ok")
+
+        monkeypatch.setattr(http.urllib.request, "urlopen", urlopen)
+        http.request("https://paced.example/a", sleep=waits.append)
+        http.request("https://paced.example/b", sleep=waits.append)
+        assert any(w > 0 for w in waits)
+
+
+class TestPost:
+    def test_form_encodes_and_sends_a_body(self, monkeypatch):
+        seen = {}
+
+        def urlopen(req, timeout=None):
+            seen["data"] = req.data
+            seen["type"] = req.headers.get("Content-type")
+            return FakeResponse(b"result")
+
+        monkeypatch.setattr(http.urllib.request, "urlopen", urlopen)
+        out = http.post_text("http://x", {"db": "sra", "id": "1,2,3"})
+        assert out == "result"
+        assert b"db=sra" in seen["data"]
+        assert b"id=1%2C2%2C3" in seen["data"]
+        assert seen["type"] == "application/x-www-form-urlencoded"

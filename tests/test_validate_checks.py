@@ -26,6 +26,7 @@ from congen.tools.validate.context import (
     CONFIG,
     CONTIG_MAP,
     NCBI,
+    SRA,
     QC_SAMPLES,
     README,
     S3,
@@ -51,6 +52,7 @@ ALL_SLICES = {
     NCBI,
     ASSEMBLY_REPORT,
     CONTIG_MAP,
+    SRA,
 }
 
 
@@ -146,7 +148,7 @@ def ids_and_severities(findings):
 class TestTier0:
     def test_clean_config_and_sheet_are_silent(self, repo):
         context = build(repo, "reptiles/podarcis-raffonei")
-        for check_id in ("R001", "R002", "R010", "R013", "R015", "R016", "R017", "R020"):
+        for check_id in ("R001", "R002", "R010", "R013", "R015", "R016", "R020"):
             assert run(context, check_id) == [], check_id
 
     def test_blank_row_is_reported_as_info(self, repo):
@@ -168,8 +170,13 @@ class TestTier0:
         assert not build(repo, "birds/sturnus-vulgaris").upload_status.has("repo_readme")
         assert build(repo, "reptiles/podarcis-raffonei").upload_status.has("repo_readme")
 
-    def test_experiment_accessions_warn_but_do_not_error(self, repo, tmp_path):
-        """SRX resolves, but an experiment can expand to several runs."""
+    def test_experiment_accessions_are_valid_sra_accessions(self, repo, tmp_path):
+        """R013 accepts them; whether they are ambiguous is R017's job now.
+
+        R017 moved to tier 5, because answering it needs SRA: offline it
+        could only report the form of an accession and guess at the
+        consequence. See tests/test_tier5.py.
+        """
         sheet = parse_sample_sheet(
             "sample_id,input_type,input\nSAMEA1,srr,ERX2249546\nSAMEA2,srr,ERR123\n",
             tmp_path / "sample_sheet.csv",
@@ -177,9 +184,7 @@ class TestTier0:
         context = build(repo, "reptiles/podarcis-raffonei")
         context.species.sheet.rows = sheet.rows
         assert run(context, "R013") == []
-        findings = run(context, "R017")
-        assert ids_and_severities(findings) == [("R017", Severity.WARN)]
-        assert "experiment" in findings[0].message
+        assert SRA in registry.get("R017").needs
 
     def test_a_non_sra_input_errors(self, repo, tmp_path):
         sheet = parse_sample_sheet(
@@ -681,3 +686,26 @@ class TestRetirement:
             @registry.register(id="G003", tier="G", severity=Sev.INFO, summary="x")
             def resurrect(context):
                 return []
+
+
+class TestStatusIsOnlyClaimedWhenChecked:
+    """Reporting "absent" because nobody looked would be a lie."""
+
+    def test_no_status_when_s3_was_not_consulted(self, repo):
+        from congen.core.cache import Cache
+        from congen.tools.validate.context import ContextGatherer
+
+        gatherer = ContextGatherer(cache=Cache(enabled=False))
+        context = gatherer.gather(repo.load("reptiles/podarcis-raffonei"), {"config", "sheet"})
+        assert context.upload_status is None
+
+    def test_status_is_claimed_when_s3_was_consulted(self, repo, monkeypatch):
+        from congen.core.cache import Cache
+        from congen.core.status import PublicationState
+        from congen.tools.validate.context import ContextGatherer
+
+        gatherer = ContextGatherer(cache=Cache(enabled=False))
+        monkeypatch.setattr(gatherer.genomeark, "accessions", lambda: [])
+        context = gatherer.gather(repo.load("reptiles/podarcis-raffonei"), {"s3"})
+        assert context.upload_status is not None
+        assert context.upload_status.state is PublicationState.ABSENT

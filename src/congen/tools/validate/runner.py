@@ -10,7 +10,7 @@ from congen.core.findings import Check, Finding, Report, Severity
 from congen.core.metadata.discovery import SpeciesRepo
 from congen.core.metadata.models import SpeciesMetadata
 from congen.tools.validate import checks as _checks  # noqa: F401 - registers catalog
-from congen.tools.validate.context import Context, ContextGatherer
+from congen.tools.validate.context import SRA, Context, ContextGatherer
 from congen.tools.validate.registry import registry
 
 DEFAULT_WORKERS = 6
@@ -21,10 +21,22 @@ class RunOptions:
     only: Sequence[str] | None = None
     skip: Sequence[str] | None = None
     workers: int = DEFAULT_WORKERS
+    #: Tier 5 is opt-in; see --check-sra.
+    check_sra: bool = False
 
 
 def selected_checks(options: RunOptions) -> list[Check]:
-    return registry.select(only=options.only, skip=options.skip)
+    """Choose checks, honouring the tier-5 opt-in.
+
+    Data-driven rather than by ID prefix: a check that needs the SRA
+    slice is excluded unless SRA lookups were requested. Excluded rather
+    than reported as SKIPPED, so an ordinary run's report is not padded
+    with checks nobody asked for.
+    """
+    chosen = registry.select(only=options.only, skip=options.skip)
+    if not options.check_sra:
+        chosen = [c for c in chosen if SRA not in c.needs]
+    return chosen
 
 
 def run_species(

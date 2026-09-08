@@ -9,13 +9,26 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import random
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+
+#: Requests per second allowed per host, where a host publishes a limit.
+#: NCBI eutils refuses above 3/s anonymously (measured: 3 of 12 unpaced
+#: requests rejected, 0 of 12 when paced beneath the cap) and 10/s with an
+#: API key.
+DEFAULT_HOST_RATE_LIMITS: dict[str, float] = {
+    "eutils.ncbi.nlm.nih.gov": 3.0,
+}
+
+EUTILS_HOST = "eutils.ncbi.nlm.nih.gov"
+ENV_NCBI_API_KEY = "NCBI_API_KEY"
 
 USER_AGENT = (
     "congen-metadata-tools/0.1 "
@@ -38,6 +51,59 @@ RETRY_EXCEPTIONS = (
     http.client.IncompleteRead,
     http.client.BadStatusLine,
 )
+
+
+class _RateLimiter:
+    """Spaces requests to a host at most ``per_second`` apart.
+
+    Shared across threads, since a full-corpus run drives six workers at
+    once and the cap is per client, not per connection.
+    """
+
+    def __init__(self, per_second: float) -> None:
+        self.min_interval = 1.0 / per_second if per_second > 0 else 0.0
+        self._lock = threading.Lock()
+        self._next_allowed = 0.0
+
+    def acquire(self, sleep=time.sleep) -> None:
+        if not self.min_interval:
+            return
+        with self._lock:
+            now = time.monotonic()
+            wait = self._next_allowed - now
+            self._next_allowed = max(now, self._next_allowed) + self.min_interval
+        if wait > 0:
+            sleep(wait)
+
+
+_limiters: dict[str, _RateLimiter] = {}
+_limiters_lock = threading.Lock()
+
+
+def set_host_rate_limit(host: str, per_second: float) -> None:
+    """Override a host's rate limit, e.g. once an API key is known."""
+    with _limiters_lock:
+        _limiters[host] = _RateLimiter(per_second)
+
+
+def _limiter_for(url: str) -> _RateLimiter | None:
+    host = urllib.parse.urlsplit(url).hostname or ""
+    with _limiters_lock:
+        limiter = _limiters.get(host)
+        if limiter is None:
+            per_second = DEFAULT_HOST_RATE_LIMITS.get(host)
+            if per_second is None:
+                return None
+            limiter = _limiters[host] = _RateLimiter(per_second)
+        return limiter
+
+
+def ncbi_api_key() -> str | None:
+    """``$NCBI_API_KEY``, which raises the eutils cap from 3/s to 10/s."""
+    key = os.environ.get(ENV_NCBI_API_KEY, "").strip()
+    if key:
+        set_host_rate_limit(EUTILS_HOST, 10.0)
+    return key or None
 
 
 class HttpError(RuntimeError):
@@ -87,6 +153,7 @@ def request(
     url: str,
     *,
     headers: dict[str, str] | None = None,
+    data: bytes | None = None,
     max_bytes: int | None = None,
     attempts: int = DEFAULT_ATTEMPTS,
     timeout: float = DEFAULT_TIMEOUT,
@@ -102,9 +169,12 @@ def request(
     if headers:
         all_headers.update(headers)
 
+    limiter = _limiter_for(url)
     last: BaseException | None = None
     for attempt in range(attempts):
-        req = urllib.request.Request(url, headers=all_headers)
+        if limiter is not None:
+            limiter.acquire(sleep)
+        req = urllib.request.Request(url, headers=all_headers, data=data)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = resp.read() if max_bytes is None else resp.read(max_bytes)
@@ -166,6 +236,14 @@ def get_text(url: str, encoding: str = "utf-8", **kwargs) -> str:
 
 def get_json(url: str, **kwargs):
     return json.loads(request(url, **kwargs).body)
+
+
+def post_text(url: str, fields: dict[str, str], encoding: str = "utf-8", **kwargs) -> str:
+    """Form-encoded POST. eutils needs it once an ID list outgrows a URL."""
+    body = urllib.parse.urlencode(fields).encode("ascii")
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    headers.update(kwargs.pop("headers", {}) or {})
+    return request(url, data=body, headers=headers, **kwargs).body.decode(encoding, "replace")
 
 
 def build_url(base: str, params: dict[str, str]) -> str:

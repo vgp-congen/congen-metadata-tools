@@ -69,3 +69,56 @@ def test_the_two_odd_assembly_names_still_resolve():
         report = ncbi.assembly_report(accession)
         assert report is not None, accession
         assert report.sequences, accession
+
+
+def test_ncbi_and_ena_agree_on_run_to_biosample():
+    """The basis for choosing NCBI: coverage is not a differentiator.
+
+    If this ever fails, one of the mirrors has drifted and the choice of
+    provider deserves revisiting.
+    """
+    import urllib.request
+
+    from congen.core.remote.sra import Sra
+
+    expected = {
+        "SRR28065797": ("SAMN39984924", "PRJNA1077913"),
+        "ERR519283": ("SAMEA2554516", "PRJEB6383"),
+        "DRR191146": ("SAMD00156790", "PRJDB7806"),
+    }
+    index = Sra().lookup(expected)
+    for accession, (biosample, bioproject) in expected.items():
+        runs = index.runs_for(accession)
+        assert len(runs) == 1, accession
+        assert runs[0].biosample == biosample, accession
+        assert runs[0].bioproject == bioproject, accession
+
+        url = (
+            "https://www.ebi.ac.uk/ena/portal/api/filereport"
+            f"?accession={accession}&result=read_run"
+            "&fields=sample_accession,study_accession&format=tsv"
+        )
+        rows = urllib.request.urlopen(url, timeout=60).read().decode().strip().split("\n")
+        fields = rows[1].split("\t")
+        assert fields[1] == biosample, f"ENA disagrees for {accession}"
+        assert fields[2] == bioproject, f"ENA disagrees for {accession}"
+
+
+def test_anser_anser_experiments_each_hold_one_run():
+    """The empirical basis for R017 being info rather than error here."""
+    from congen.core.metadata.discovery import SpeciesRepo
+    from congen.core.remote.sra import Sra
+
+    try:
+        repo = SpeciesRepo.discover()
+    except Exception:
+        import pytest
+
+        pytest.skip("no congen-metadata checkout alongside this repo")
+
+    species = repo.load("birds/anser-anser")
+    experiments = {r.input for r in species.sheet.rows if r.is_experiment_accession}
+    assert len(experiments) == 42
+    index = Sra().lookup(experiments)
+    assert index.missing == ()
+    assert all(len(index.runs_for(e)) == 1 for e in experiments)

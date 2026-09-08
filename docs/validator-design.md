@@ -33,7 +33,7 @@ congen-metadata-tools/
         headers.py               range-read VCF/BAM headers
         qc.py                    snpArcher QC/callable-sites table readers
         ncbi.py                  datasets API + assembly_report.txt
-        ena.py                   filereport (SRR → biosample, study membership)
+        sra.py                   NCBI SRA runinfo (run → biosample, bioproject)
         literature.py            study → publication lookup (readme tool)
       report/render.py           human / json / github renderers
       cli.py                     `congen` dispatcher
@@ -61,7 +61,7 @@ With two concrete tools the shared surface is no longer guesswork:
 | `remote/genomeark.py` | presence checks | file inventory, sizes | upload/sync |
 | `remote/qc.py` | `S005` sample list | **coverage range, het, missingness** | status |
 | `remote/ncbi.py` | reference identity | assembly name, organism | sheet builder |
-| `remote/ena.py` | `E001`–`E003` | run counts, study titles | sheet builder |
+| `remote/sra.py` | `E001`–`E003`, `R017` | run counts, study titles | sheet builder |
 | `remote/literature.py` | — | citations | — |
 | `findings.py`, `report/` | primary consumer | diagnostics while generating | all |
 | `http.py`, `cache.py` | all remote | all remote | all |
@@ -351,17 +351,16 @@ Stable IDs so findings can be referenced and suppressed in CI.
 | `R014` | error | duplicate `(sample_id, input)` pairs — a genuinely repeated run |
 | `R015` | warn | `input` is a local filesystem path — not reproducible |
 | `R016` | warn | `sample_id` is not a BioSample accession (`SAMN`/`SAMEA`/`SAMD`) |
-| `R017` | warn | an `srr` input names an SRA *experiment* (`SRX`/`ERX`/`DRX`) rather than a run |
 | `R020` | warn | `README.txt` accession matches `reference.source` |
 
 `R014` is scoped to *pairs*: a repeated `sample_id` alone is expected.
 
-**`R013` accepts experiment accessions, and `R017` is why.** An earlier draft
-required `[SED]RR[0-9]+`, which fired on 42 rows in `birds/anser-anser` — the one
-species whose sheet uses `SRX`/`ERX`. Those are SRA *experiment* accessions; the
-download tooling resolves them, so they are not invalid. But an experiment can
-contain more than one run, so an `SRX` does not pin down which reads were used.
-Hence `R013` accepts either form and `R017` warns about the imprecision.
+**`R013` accepts experiment accessions.** An earlier draft required
+`[SED]RR[0-9]+`, which fired on 42 rows in `birds/anser-anser` — the one species
+whose sheet uses `SRX`/`ERX`. Those are SRA *experiment* accessions; the download
+tooling resolves them, so they are not invalid. Whether a given experiment is
+*ambiguous* is a separate question that cannot be answered offline, so it belongs
+to `R017` in tier 5.
 
 #### Tier 1 — completeness on GenomeArk
 
@@ -541,12 +540,43 @@ between runs. Numbered `P010` because `P004` and `P005` were the retired
 
 | ID | Severity | Check |
 |---|---|---|
-| `E001` | error | each `srr` run resolves via ENA to the `sample_id` biosample |
-| `E002` | warn | every run's study is listed among the README bioprojects |
-| `E003` | warn | a README bioproject contributes no runs to the sheet |
+| `E001` | error | each `srr` input resolves to the `sample_id` biosample |
+| `E002` | warn | every run's bioproject is listed in `README.txt` |
+| `E003` | warn | a `README.txt` bioproject contributes no runs to the sheet |
+| `R017` | error / info | an `srr` input names an SRA experiment: **error** if it expands to more than one run, **info** if it expands to exactly one |
 
-ENA's `filereport` endpoint is bulk-queryable by bioproject, so this costs one
-request per bioproject rather than one per run.
+**NCBI, not ENA.** An earlier draft specified ENA's `filereport`, chosen during
+prototyping for convenience. Tested side by side, the two agree exactly —
+`SRR28065797` → `SAMN39984924`, `ERR519283` → `SAMEA2554516`, `DRR191146` →
+`SAMD00156790`, with matching bioprojects — so coverage is not a differentiator;
+both mirror INSDC, DDBJ `DRR` accessions included. NCBI wins on three other
+grounds:
+
+* **One provider.** The tool already depends on NCBI for the datasets API and the
+  FTP assembly reports. A second service for one tier doubles what can be down
+  and doubles where to look when it is.
+* **Authority of record** for the identifiers the sheets actually use — `SAMN`,
+  `PRJNA`.
+* **`runinfo` returns `Experiment` beside `Run`**, so `R017` costs nothing extra.
+
+Two objections to NCBI did not survive testing. `runinfo` is not 47 positional
+columns: it has a header row, and `csv.DictReader` reads `Run`, `Experiment`,
+`BioSample` and `BioProject` by name. And the rate limit is a pacing problem, not
+a blocker — unpaced, 3 of 12 requests were refused; paced under the 3/s anonymous
+cap, 12 of 12 succeeded. `core.http` owns a per-host limiter, and
+`$NCBI_API_KEY` raises the cap to 10/s when set.
+
+**Batching keeps it cheap.** Querying 3,761 runs one at a time at 3/s would take
+twenty minutes. `esearch` accepts run accessions OR'd together and `efetch`
+accepts the resulting UID list by POST, so a batch of ~150 accessions costs two
+requests. The whole corpus is roughly 50 requests, well under a minute.
+
+`R017` moved here from tier 0. Offline it could only ever say "this *might* be
+ambiguous", which is the kind of speculation this tool avoids elsewhere. With
+`runinfo` the question is answerable: all 42 experiment accessions in
+`birds/anser-anser` expand to exactly one run each, so they are informational
+rather than a problem. An experiment holding several runs genuinely fails to
+identify which reads were used, and that is an error.
 
 ### Report format
 
@@ -588,7 +618,8 @@ exhaustive pass. At 6–8 way concurrency a full-corpus run lands in a couple of
 minutes.
 
 Be a good citizen: bounded concurrency, backoff on 5xx/503 and connection resets,
-descriptive User-Agent on NCBI and ENA calls.
+descriptive User-Agent on every NCBI call, and the per-host rate limiter for
+eutils.
 
 ## Part 3 — `congen readme` (sketch)
 
@@ -663,7 +694,8 @@ itself needs its own design pass.
    for `contig_map.tsv`, and the `F010` fallback for a non-NCBI reference.
 4. **Done.** Tier 4. Batch mode and orphan detection (`G020`/`G021`) landed in
    milestone 2, and the CI workflow is deferred.
-5. **Tier 5** behind `--check-sra`, and `core.remote.qc` in support of `readme`.
+5. **Tier 5** behind `--check-sra`, on NCBI SRA, plus the per-host rate limiter
+   in `core.http`. `core.remote.qc` grows its coverage readers with `readme`.
 
 Regression-test milestone 2 against the baseline: the counts below are the
 expected output, and any change to them should be explained.
@@ -713,10 +745,35 @@ optional:  filtered_vcf 13/69, published_readme 68/69, repo_readme 57/69
 `filtered_vcf` is 13 of 69 rather than 14: fourteen accessions publish one, and
 the fourteenth is the *Balaenoptera ricei* orphan with no species directory.
 
+### Tier 5 (`--check-sra`)
+
+Opt-in, so not part of the default counts above. Over the whole corpus it takes
+~85s and adds:
+
+| ID | Result |
+|---|---|
+| `E001` | **clean** — all 3,761 run accessions belong to the biosample the sheet claims |
+| `E002` | 3 species draw runs from a bioproject their README does not cite: `birds/dryobates-pubescens` (`PRJNA1462765`), `fishes/cyclopterus-lumpus` (`PRJNA1462766`), `mammals/sus-scrofa-domesticus` (`PRJEB71922`) |
+| `E003` | 2 species cite a bioproject contributing no runs: `dryobates-pubescens` (`PRJNA561991`), `cyclopterus-lumpus` (`PRJNA562003`) |
+| `R017` | 1 info — `birds/anser-anser`'s 42 experiment accessions each hold exactly one run |
+
+**The `E002`/`E003` pairs are one mistake, not two.** For both
+`dryobates-pubescens` and `cyclopterus-lumpus` the README cites the *RefSeq
+genome assembly* BioProject (`PRJNA561991`, `PRJNA562003`), which by definition
+contributes no reads, while the reads sit under a separate *raw sequence reads*
+BioProject (`PRJNA1462765`, `PRJNA1462766`). Both checks fire because the project
+that has the runs is undocumented and the documented one has none. The tool
+reports the two facts and does not try to pair them, since inferring a
+substitution would be a guess.
+
+`sus-scrofa-domesticus` is the different case: eight documented projects, all
+contributing, plus one that is not documented.
+
 ### Silent checks
 
-31 of 42 checks fire on nothing: all of tier 3a, all of tier 4's comparisons, and
-most of tier 1's integrity checks. That is good news about the data, but it means
+31 of 41 default checks fire on nothing: all of tier 3a, all of tier 4's
+comparisons, and most of tier 1's integrity checks. Tier 5 adds `E001`, also
+clean. That is good news about the data, but it means
 those checks are load-bearing only through their negative controls in the test
 suite — `tests/test_tier3a.py` and `tests/test_tier4.py` exist for exactly that
 reason.

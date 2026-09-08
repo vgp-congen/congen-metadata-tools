@@ -9,8 +9,8 @@ and the design of the first two tools.
 
 ## Status
 
-Milestones 1-4 are in place. `congen validate` runs tiers 0, 1, 2, 3a, 3b and 4
-over one species or the whole corpus.
+All five milestones are in place. `congen validate` runs tiers 0, 1, 2, 3a, 3b
+and 4 over one species or the whole corpus, plus tier 5 behind `--check-sra`.
 
 | Module | What it does |
 |---|---|
@@ -25,9 +25,10 @@ over one species or the whole corpus.
 | `congen.core.remote.genomeark` | anonymous S3 listing, zarr-aware |
 | `congen.core.remote.ncbi` | NCBI Datasets metadata and assembly reports |
 | `congen.core.remote.qc` | snpArcher QC tables (`contig_map.tsv` so far) |
-| `congen.tools.validate` | 42 checks across tiers 0, 1, 2, 3a, 3b and 4 |
+| `congen.core.remote.sra` | NCBI SRA runinfo, batched and rate-limited |
+| `congen.tools.validate` | 45 checks across tiers 0, 1, 2, 3a, 3b, 4 and 5 |
 
-Not yet built: tier 5 (SRA cross-checks), the CI workflow, and the `readme` tool.
+Not yet built: the CI workflow and the `readme` tool.
 
 ## Usage
 
@@ -36,7 +37,12 @@ congen validate reptiles/podarcis-raffonei   # one species
 congen validate --all                        # the whole corpus, ~16s
 congen validate --list-checks                # the catalog
 congen validate --all --json report.json --strict
+congen validate --all --check-sra              # + NCBI SRA cross-checks (tier 5)
 ```
+
+Tier 5 is opt-in: it is the only tier whose cost scales with sample count rather
+than species count. Set `NCBI_API_KEY` to raise the eutils rate cap from 3/s to
+10/s.
 
 Exit codes: `0` clean or warnings only, `1` any error, `2` misuse.
 
