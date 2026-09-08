@@ -264,23 +264,3 @@ def readme_accession_matches(context: Context) -> list[Finding]:
             location=Location(readme.path),
         )
     ]
-
-
-@check(
-    id="R021",
-    tier="R",
-    severity=Severity.INFO,
-    summary="README.txt is present",
-    needs=(),
-)
-def readme_exists(context: Context) -> list[Finding]:
-    if context.readme is not None:
-        return []
-    return [
-        Finding(
-            id="R021",
-            severity=Severity.INFO,
-            subject=context.subject,
-            message="no README.txt",
-        )
-    ]

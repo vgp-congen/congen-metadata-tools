@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from congen.core.findings import Finding, Report, Severity
+from congen.core.status import OPTIONAL_ARTIFACTS, PublicationState
 
 SEVERITY_LABEL = {
     Severity.ERROR: "error",
@@ -50,6 +51,53 @@ def _location_text(finding: Finding, root: Path | None) -> str:
     return f"{path}:{line}" if line else str(path)
 
 
+#: How many species to name inline before summarizing.
+MAX_NAMED = 8
+
+STATE_ORDER = (PublicationState.COMPLETE, PublicationState.PARTIAL, PublicationState.ABSENT)
+
+
+def render_status(report: Report) -> str:
+    """The publication-state block.
+
+    Separate from findings because these are descriptions, not defects: a
+    species awaiting data is a normal state, and so is an absent optional
+    artifact.
+    """
+    if not report.statuses:
+        return ""
+
+    lines = ["publication status"]
+    counts = report.status_counts()
+    for state in STATE_ORDER:
+        count = counts[state]
+        if not count:
+            continue
+        subjects = report.subjects_in_state(state)
+        if state is PublicationState.COMPLETE:
+            lines.append(f"  {state.value:9s} {count:3d}")
+            continue
+        names = ", ".join(s.split("/")[-1] for s in subjects[:MAX_NAMED])
+        more = f" (+{len(subjects) - MAX_NAMED} more)" if len(subjects) > MAX_NAMED else ""
+        lines.append(f"  {state.value:9s} {count:3d}   {names}{more}")
+
+    published = [s for s in report.statuses if s.state is not PublicationState.ABSENT]
+    if published:
+        counted = [
+            f"{artifact} {sum(1 for s in published if s.has(artifact))}/{len(published)}"
+            for artifact in OPTIONAL_ARTIFACTS
+        ]
+        lines.append(f"  optional: {', '.join(counted)}")
+
+    differing = [s for s in report.statuses if s.accession_differs]
+    for status in differing:
+        lines.append(
+            f"  note: {status.subject} data is under {status.accession}, "
+            f"config declares {status.declared_accession}"
+        )
+    return "\n".join(lines)
+
+
 def render_human(
     report: Report,
     *,
@@ -82,6 +130,10 @@ def render_human(
         if skipped and not show_skipped:
             lines.append(f"              ({skipped} check(s) skipped)")
 
+    status_block = render_status(report)
+    if status_block:
+        lines.append("")
+        lines.append(status_block)
     lines.append("")
     lines.append(_summary_line(report))
     return "\n".join(lines)
@@ -91,6 +143,10 @@ def render_json(report: Report, *, extra: dict | None = None) -> str:
     payload = {
         "subjects": report.subjects,
         "checks_run": report.checks_run,
+        "statuses": [status.as_dict() for status in report.statuses],
+        "status_counts": {
+            state.value: count for state, count in report.status_counts().items()
+        },
         "counts": {
             severity.value: count for severity, count in report.counts().items()
         },

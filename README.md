@@ -17,6 +17,7 @@ over one species or the whole corpus.
 | `congen.core.http` | ranged GET with retry/backoff |
 | `congen.core.cache` | ETag-aware JSON disk cache |
 | `congen.core.findings` | severities, findings, the check registry |
+| `congen.core.status` | publication state: absent / partial / complete |
 | `congen.core.report` | human / JSON / GitHub-annotation renderers |
 | `congen.core.metadata` | tolerant loaders, models, species discovery, VGP list |
 | `congen.core.metadata.writers` | round-trip YAML, managed blocks, atomic writes |
@@ -24,7 +25,7 @@ over one species or the whole corpus.
 | `congen.core.remote.genomeark` | anonymous S3 listing, zarr-aware |
 | `congen.core.remote.ncbi` | NCBI Datasets metadata and assembly reports |
 | `congen.core.remote.qc` | snpArcher QC tables (`contig_map.tsv` so far) |
-| `congen.tools.validate` | 47 checks across tiers 0, 1, 2, 3a, 3b and 4 |
+| `congen.tools.validate` | 42 checks across tiers 0, 1, 2, 3a, 3b and 4 |
 
 Not yet built: tier 5 (SRA cross-checks), the CI workflow, and the `readme` tool.
 
@@ -38,6 +39,11 @@ congen validate --all --json report.json --strict
 ```
 
 Exit codes: `0` clean or warnings only, `1` any error, `2` misuse.
+
+The report has two parts. **Findings** are defects. **Publication status** is a
+description — whether a species has data yet, which optional artifacts exist,
+and which accession the data sits under. A species awaiting its run is a status
+row, not a warning.
 
 ## Install
 

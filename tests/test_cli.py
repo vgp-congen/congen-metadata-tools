@@ -180,9 +180,15 @@ class TestValidateCli:
         assert json.loads(target.read_text())["subjects"] == ["reptiles/podarcis-raffonei"]
 
     def test_quiet_hides_info_findings(self, offline):
-        args = ["--metadata-root", str(METADATA_ROOT), "birds/sturnus-vulgaris", "--only", "R021"]
-        assert "R021" in CliRunner().invoke(validate, args).output
-        assert "R021" not in CliRunner().invoke(validate, [*args, "--quiet"]).output
+        args = [
+            "--metadata-root",
+            str(METADATA_ROOT),
+            "birds/anser-albifrons",
+            "--only",
+            "R010",
+        ]
+        assert "R010" in CliRunner().invoke(validate, args).output
+        assert "R010" not in CliRunner().invoke(validate, [*args, "--quiet"]).output
 
 
 class TestOrphanFindings:

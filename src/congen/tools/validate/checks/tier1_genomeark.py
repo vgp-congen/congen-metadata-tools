@@ -1,16 +1,20 @@
-"""Tier 1 — is the data on GenomeArk, and is it complete?"""
+"""Tier 1 — integrity of what GenomeArk published.
+
+*Completeness* is no longer answered here. Whether a species has data at
+all, which optional artifacts exist, and which accession the data sits
+under are descriptions rather than defects, so they live in
+:mod:`congen.core.status` and appear in the report's status block.
+
+Retired into that model: `G002` (accession found under the counterpart),
+`G003` (nothing published), `G015` (missing subdirectories) and `G016`
+(`filtered.vcf.gz` present). What remains are the checks that describe
+something actually broken.
+"""
 
 from __future__ import annotations
 
 from congen.core.findings import Finding, Location, Severity
-from congen.core.remote.genomeark import EXPECTED_SUBDIRS
-from congen.tools.validate.context import (
-    CONFIG,
-    FILTERED_VCF,
-    RAW_VCF,
-    S3,
-    Context,
-)
+from congen.tools.validate.context import CONFIG, RAW_VCF, S3, Context
 from congen.tools.validate.registry import check
 
 #: `qc/ind_filter_list.txt` is legitimately empty when no individual is
@@ -43,71 +47,27 @@ def accession_exists_on_s3(context: Context) -> list[Finding]:
 
 
 @check(
-    id="G002",
-    tier="G",
-    severity=Severity.WARN,
-    summary="data is published under the accession the config declares",
-    needs=(S3,),
-)
-def accession_matches_publication(context: Context) -> list[Finding]:
-    if not context.accession_was_flipped:
-        return []
-    return [
-        Finding(
-            id="G002",
-            severity=Severity.WARN,
-            subject=context.subject,
-            message=(
-                f"data is published under {context.resolved_accession}, "
-                f"but the config declares {context.declared_accession}"
-            ),
-            detail="the same assembly in the other accession namespace; see F021",
-            location=Location(context.config.path),
-        )
-    ]
-
-
-@check(
-    id="G003",
-    tier="G",
-    severity=Severity.WARN,
-    summary="the species has data published on GenomeArk",
-    needs=(CONFIG,),
-)
-def data_is_published(context: Context) -> list[Finding]:
-    """A pending run is a normal state, but it should not be silent.
-
-    Worded as information rather than failure, and it is what makes every
-    downstream tier report SKIPPED instead of erroring.
-    """
-    if context.resolved_accession:
-        return []
-    return [
-        Finding(
-            id="G003",
-            severity=Severity.WARN,
-            subject=context.subject,
-            message="no data published on GenomeArk yet",
-            detail=f"looked for {context.declared_accession} and its GCA/GCF counterpart",
-        )
-    ]
-
-
-@check(
     id="G010",
     tier="G",
-    severity=Severity.ERROR,
+    severity=Severity.WARN,
     summary="vcfs/raw.vcf.gz is present",
     needs=(S3,),
 )
 def raw_vcf_present(context: Context) -> list[Finding]:
+    """A warning, not an error: an incomplete upload may be mid-flight.
+
+    The tool cannot know whether a publication was supposed to have
+    finished, so calling it an error overclaims. It stays a finding
+    because an upload that started and stopped is worth surfacing, and
+    the status block explains the rest.
+    """
     assert context.inventory
     if context.inventory.object("vcfs", RAW_VCF):
         return []
     return [
         Finding(
             id="G010",
-            severity=Severity.ERROR,
+            severity=Severity.WARN,
             subject=context.subject,
             message=f"no vcfs/{RAW_VCF}",
             # Say what is there, not what it means. Whether this is an
@@ -226,55 +186,5 @@ def no_empty_data_objects(context: Context) -> list[Finding]:
             subject=context.subject,
             message=f"{len(suspects)} zero-byte object(s) in the data directories",
             detail=", ".join(sorted(o.key.split("/", 4)[-1] for o in suspects)),
-        )
-    ]
-
-
-@check(
-    id="G015",
-    tier="G",
-    severity=Severity.WARN,
-    summary="the expected subdirectories are present",
-    needs=(S3,),
-)
-def expected_subdirs_present(context: Context) -> list[Finding]:
-    assert context.inventory
-    missing = [name for name in EXPECTED_SUBDIRS if name not in context.inventory.subdirs]
-    if not missing:
-        return []
-    return [
-        Finding(
-            id="G015",
-            severity=Severity.WARN,
-            subject=context.subject,
-            message=f"missing subdirector{'y' if len(missing) == 1 else 'ies'}: {', '.join(missing)}",
-        )
-    ]
-
-
-@check(
-    id="G016",
-    tier="G",
-    severity=Severity.INFO,
-    summary="records whether filtered.vcf.gz is present",
-    needs=(S3,),
-)
-def filtered_vcf_inventory(context: Context) -> list[Finding]:
-    """Recorded, never judged.
-
-    ``filtered.vcf.gz`` is a default GATK output that some snpArcher
-    versions omitted, so its presence says nothing about the config or
-    the validity of the run. Deliberately uncorrelated with
-    ``modules.postprocess.enabled``; a future filtering pipeline owns
-    this file.
-    """
-    assert context.inventory
-    present = FILTERED_VCF in context.inventory.vcf_names
-    return [
-        Finding(
-            id="G016",
-            severity=Severity.INFO,
-            subject=context.subject,
-            message=f"{FILTERED_VCF} {'present' if present else 'absent'}",
         )
     ]

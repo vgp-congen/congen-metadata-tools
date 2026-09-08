@@ -101,9 +101,20 @@ def sheet_matches_vcf(context: Context) -> list[Finding]:
     needs=(SHEET, S3),
 )
 def sheet_matches_bams(context: Context) -> list[Finding]:
+    """Only meaningful once the publication is complete.
+
+    During a partial upload the BAM set is by definition not final, so
+    comparing it to the sheet measures how far the upload got rather than
+    whether the metadata is right. `grus-americana` — 57 samples in the
+    sheet, 42 BAMs published, no VCF — is exactly that case, and this
+    check reported it as a metadata mismatch until the status model
+    existed to distinguish the two.
+    """
     assert context.inventory
     if not context.inventory.bam_objects:
         return []  # G012 owns an empty bams/
+    if not context.publication_is_complete:
+        return []
     return _compare(
         context,
         "S002",
@@ -126,6 +137,8 @@ def vcf_matches_bams(context: Context) -> list[Finding]:
     assert context.vcf_header and context.inventory
     if not context.inventory.bam_objects:
         return []
+    if not context.publication_is_complete:
+        return []  # see S002: a partial upload's BAM set is not final
     return _compare(
         context,
         "S003",

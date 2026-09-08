@@ -26,6 +26,7 @@ from congen.core.remote.genomeark import AccessionInventory, GenomeArk
 from congen.core.remote.headers import BamHeader, VcfHeader, read_bam_header, read_vcf_header
 from congen.core.remote.ncbi import AssemblyInfo, AssemblyReport, Ncbi
 from congen.core.remote.qc import ContigMap, parse_contig_map
+from congen.core.status import PublicationState, UploadStatus, build_upload_status
 
 # Slice names. Checks reference these in `needs=(...)`.
 CONFIG = "config"
@@ -79,6 +80,8 @@ class Context:
     ncbi_info: AssemblyInfo | None = None
     assembly_report: AssemblyReport | None = None
     contig_map: ContigMap | None = None
+    #: Publication state. Always set, even when nothing is published.
+    upload_status: UploadStatus | None = None
 
     #: Tunable read by F009.
     missing_contig_threshold: float = DEFAULT_MISSING_THRESHOLD
@@ -112,6 +115,16 @@ class Context:
         return bool(
             self.resolved_accession and declared and self.resolved_accession != declared
         )
+
+    @property
+    def publication_is_complete(self) -> bool:
+        """True only when every required artifact is published.
+
+        Checks that compare against the published data should consult
+        this: during a partial upload the BAM set is not final, so
+        comparing it to the sample sheet measures nothing.
+        """
+        return bool(self.upload_status and self.upload_status.is_complete)
 
 
 class ContextGatherer:
@@ -177,6 +190,15 @@ class ContextGatherer:
         if needs_s3:
             self._gather_s3(context, required)
 
+        context.upload_status = build_upload_status(
+            subject=context.subject,
+            declared_accession=context.declared_accession,
+            resolved_accession=context.resolved_accession,
+            inventory=context.inventory,
+            sheet_sample_count=len(species.sheet.unique_sample_ids),
+            vcf_sample_count=len(context.vcf_header.samples) if context.vcf_header else None,
+            repo_readme=species.readme is not None,
+        )
         return context
 
     def _gather_ncbi(self, context: Context) -> None:

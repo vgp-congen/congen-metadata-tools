@@ -21,6 +21,7 @@ congen-metadata-tools/
       http.py                    ranged GET, retry/backoff, User-Agent
       cache.py                   disk cache, ETag-aware
       findings.py                Severity, Finding, CheckRegistry
+      status.py                  PublicationState, UploadStatus
       metadata/
         discovery.py             SpeciesRepo — find and select species dirs
         models.py                SpeciesMetadata, SampleRow, ReferenceSpec
@@ -160,7 +161,47 @@ checks require. And **a check whose inputs are unavailable reports `SKIPPED`, no
 about the missing VCF instead of a cascade of false sample mismatches.
 
 Check IDs are public API: CI configs will suppress them by ID. Retire, don't
-renumber.
+renumber — `CheckRegistry.retire()` records withdrawn IDs and refuses to
+re-register one, so a suppression can never silently start hiding a different
+check.
+
+### Findings and status are different questions
+
+`core.status` carries a second, parallel output: how far along a species'
+publication is.
+
+```python
+UploadStatus(subject, state, accession, declared_accession,
+             present, missing, n_sheet_samples, n_bams, n_vcf_samples)
+PublicationState = absent | partial | complete
+```
+
+The split exists because **findings answer "what is wrong?" and status answers
+"how far along is this?"** An earlier version answered the second in the
+vocabulary of the first, and no severity ever fit: "no data published yet" is not
+a warning, and an absent optional artifact is not even informative as a
+per-species line. Five checks were withdrawn into this model —
+`G002` (data found under the counterpart accession), `G003` (nothing published),
+`G015` (missing subdirectories), `G016` (`filtered.vcf.gz` present) and `R021`
+(no `README.txt`) — which removed 104 of 177 findings, all of them descriptions
+rather than defects.
+
+Required artifacts are `raw_vcf`, `raw_vcf_index`, `bams`, `qc` and
+`callable_sites`. `filtered_vcf`, `published_readme` and `repo_readme` are
+optional on GenomeArk today, so they are recorded and never judged, and they
+never affect `state`.
+
+Nothing in `core.status` carries a severity or a policy, which is what lets the
+validator, a future status report and the readme generator share it.
+
+**It also fixed a real false positive.** `S002` compares the sample sheet with
+the published BAMs — but during a partial upload the BAM set is by definition not
+final, so the comparison measures how far the upload got rather than whether the
+metadata is right. `grus-americana` (57 samples in the sheet, 42 BAMs, no VCF)
+was reported as a metadata mismatch until `state` existed to tell the two apart.
+`S002` and `S003` now run only when the publication is complete. That guard is
+not expressible through `needs`, which knows whether a slice was fetched but not
+what it means.
 
 ## Part 2 — `congen validate`
 
@@ -312,7 +353,6 @@ Stable IDs so findings can be referenced and suppressed in CI.
 | `R016` | warn | `sample_id` is not a BioSample accession (`SAMN`/`SAMEA`/`SAMD`) |
 | `R017` | warn | an `srr` input names an SRA *experiment* (`SRX`/`ERX`/`DRX`) rather than a run |
 | `R020` | warn | `README.txt` accession matches `reference.source` |
-| `R021` | info | `README.txt` missing |
 
 `R014` is scoped to *pairs*: a repeated `sample_id` alone is expected.
 
@@ -327,31 +367,24 @@ Hence `R013` accepts either form and `R017` warns about the imprecision.
 
 | ID | Severity | Check |
 |---|---|---|
-| `G001` | error | accession prefix exists on S3 (after GCA/GCF resolution) |
-| `G002` | warn | S3 data found only under the GCA/GCF counterpart of the config accession |
-| `G003` | warn | no data on S3 for this species |
-| `G010` | error | `vcfs/raw.vcf.gz` present |
+| `G001` | error | accession prefix exists on S3 but published no objects |
+| `G010` | warn | `vcfs/raw.vcf.gz` present |
 | `G011` | error | `vcfs/raw.vcf.gz.tbi` present |
 | `G012` | error | `bams/` non-empty |
 | `G013` | error | every `bams/*.bam` has a matching `.csi` |
-| `G014` | error | no zero-byte objects |
-| `G015` | warn | expected subdirectory missing (`qc/`, `callable_sites/`) |
-| `G016` | info | `filtered.vcf.gz` present / absent — recorded, never judged |
+| `G014` | error | no zero-byte objects in the data directories |
 | `G020` | warn | S3 accession is in the VGP list but has no repo species directory |
 | `G021` | warn | S3 accession is in neither the repo nor the VGP list — stray data |
 
-**`G003` is a warning carrying legitimate information, not a defect.** A species
-with no GenomeArk data is a normal, expected state — the run is pending — but it
-should be visible rather than silent. Two consequences: it renders with its own
-wording ("no data published yet") rather than as a failure, and because it
-removes the inputs for tiers 1–4, those checks report `SKIPPED` via `needs`
-rather than erroring. Currently 10 species.
+Completeness is not answered here any more. Whether a species has data at all,
+which optional artifacts exist, and which accession the data sits under are
+descriptions, so they live in the status block (see Part 1). What remains are the
+checks that describe something actually broken.
 
-**`G016` records `filtered.vcf.gz` presence at INFO and draws no conclusion.** It
-is a default GATK output that some snpArcher versions omitted, so its presence
-says nothing about the config or the run's validity. It is deliberately *not*
-correlated with `modules.postprocess.enabled`. A future filtering pipeline will
-own this file; until then the validator only inventories it.
+**`G010` is a warning, not an error.** An upload with BAMs and no VCF may simply
+be mid-flight, and the tool cannot know whether it was supposed to have finished,
+so an error overclaims. It stays a finding because an upload that started and
+stopped is worth surfacing; `state: partial` explains the rest.
 
 **`G011` checks presence only.** An earlier draft also required the index to be
 no older than the VCF. That cannot work: S3 `LastModified` records upload order,
@@ -469,10 +502,10 @@ It cannot tell you the config declares the wrong assembly. The VGP list can.
 `F021` is an error rather than a warning because the VGP list is now an
 authority and the fix is mechanical and unambiguous — normalize to the listed
 accession. Note this supersedes the earlier judgement, made before the list
-existed, that a GCA/GCF flip could only be a warning. `G002` remains a *warning*
-and is not redundant with `F021`: it is the observation about where the data was
-actually found, which the report needs in order to explain itself, whereas `F021`
-is the normative claim about the config.
+existed, that a GCA/GCF flip could only be a warning. The observation about where
+the data was actually found is now a status fact (`accession` and
+`accession_differs`) rather than the `G002` warning it used to be, leaving `F021`
+as the single normative claim about the config.
 
 These five checks are cheap — one CSV read, one cached datasets-API call — and
 they caught two real errors on the first pass.
@@ -587,8 +620,9 @@ itself needs its own design pass.
 
 1. **Additional to `README.txt`, not a replacement — settled.** The baseline
    `README.txt` stays, and stays authoritative; the generated document is a
-   richer sibling. So the validator's `R020`/`R021` and `E002`/`E003` keep
-   reading `README.txt` unchanged, and there is no migration to sequence.
+   richer sibling. So the validator's `R020` and `E002`/`E003` keep reading
+   `README.txt` unchanged, and there is no migration to sequence. Its presence
+   is recorded as an optional status artifact rather than a finding.
 
    The generated file's **name is not settled**, and may deliberately avoid
    `README.md` to prevent confusion. Two consequences for the implementation:
@@ -636,36 +670,66 @@ expected output, and any change to them should be explained.
 
 ## Baseline — findings as of 2026-09-08
 
-Produced by `congen validate --all` over all 79 species: **7 errors across 5
-species**, 18 warnings, 92 informational. A full-corpus run takes ~16s at 8-way
-concurrency with a warm cache. These counts are the regression target; any change
-to them should be explained.
+Produced by `congen validate --all` over all 79 species: **4 errors and 7
+warnings across 6 subjects**, with 68 informational findings. A full-corpus run
+takes ~40s at 6-way concurrency. These counts are the regression target; any
+change to them should be explained.
+
+Moving publication state out of the finding stream cut this from 7 errors, 18
+warnings and 159 informational findings — 104 of those were descriptions, not
+defects.
+
+### Errors
 
 | Species | Finding |
 |---|---|
-| `birds/sturnus-vulgaris` | **`F020`** — config declares `GCF_001447265.1` (`Sturnus_vulgaris-1.0`, Scaffold); the VGP main-haplotype assembly is `GCA_052056855.1`. Not a GCA/GCF variant — a different, older, scaffold-level assembly. Also `G003` (no data published), so nothing has been run against it, and `R003` (an accession in `reference.name`). |
-| `birds/grus-americana` | **`F021`** — config declares `GCF_028858705.1`; VGP and GenomeArk both use `GCA_028858705.1`, confirmed by NCBI `paired_assembly` as the same assembly. Also `G002` (data found under the counterpart), `G010` (BAMs but no VCF), `G015`, and **`S002`** — the sheet lists 57 samples but only 42 BAMs are published, consistent with the part-way upload. |
-| `birds/anser-albifrons` | **`S001`**/**`S002`** — `SAMEA112262514` is in the BAMs and the VCF but absent from the sheet. The published copy of the sheet is identically wrong, so the VCF is the only witness. Neither finding asserts a direction; which side is stale needs a human. |
-| `mammals/panthera-onca` | **`G010`** — `GCA_046562875.2` has BAMs but no VCF. |
-| `birds/anser-anser` | `R017` — 42 inputs across 20 samples are SRA experiment accessions rather than run accessions. The only species in the corpus using `SRX`/`ERX`. |
+| `birds/sturnus-vulgaris` | **`F020`** — config declares `GCF_001447265.1` (`Sturnus_vulgaris-1.0`, Scaffold); the VGP main-haplotype assembly is `GCA_052056855.1`. Not a GCA/GCF variant — a different, older, scaffold-level assembly. Nothing has been run against it: `state: absent`. |
+| `birds/grus-americana` | **`F021`** — config declares `GCF_028858705.1`; VGP and GenomeArk both use `GCA_028858705.1`, confirmed by NCBI `paired_assembly` as the same assembly. |
+| `birds/anser-albifrons` | **`S001`** and **`S002`** — `SAMEA112262514` is in the BAMs and the VCF but absent from the sheet. The published copy of the sheet is identically wrong, so the VCF is the only witness. Neither finding asserts a direction. |
+
+### Warnings
+
+| Subject | Finding |
+|---|---|
+| `birds/grus-americana` | `G010` — 42 BAMs, no VCF. `state: partial`. |
+| `mammals/panthera-onca` | `G010` — 35 BAMs, no VCF. `state: partial`. |
+| `birds/sturnus-vulgaris` | `R003` — an accession in `reference.name`. |
+| `birds/anser-anser` | `R017` — 42 inputs across 40 samples are SRA experiment accessions. The only species using `SRX`/`ERX`, and it is nearly the whole sheet. |
 | `reptiles/shinisaurus-crocodilurus` | `R015` (one input is a local scratch fastq path) and `S006` (the published sheet differs from the repo copy — same samples, different rows). |
-| `birds/hirundo-rustica` | Clean. Listed only because its index/VCF upload order is what retired the `G011` timestamp comparison. |
-| — | `G020` — `GCA_028023285.1` (*Balaenoptera ricei*) is published and in the VGP list, but has no species directory. |
-| 10 species | `G003` — no data published yet: `notamacropus-eugenii`, `macrotis-lagotis`, `taeniopygia-guttata`, `arvicola-amphibius`, `caprimulgus-europaeus`, `haliaeetus-albicilla`, `myotis-nattereri`, `coregonus-lavaretus`, `astatotilapia-calliptera`, `sturnus-vulgaris`. |
-| 69 species | `G016` — `filtered.vcf.gz` present or absent. Informational only. |
-| 22 species | `R021` — no `README.txt`. |
-| 77 species | Clean on canonicality — `reference.source` is exactly the VGP main-haplotype accession. |
-| 66 species | Clean on sample identity. |
-| 67 species | Clean on provenance — every published VCF records GATK 4.6.2.0 with `--sample-ploidy 2` and `--heterozygosity 0.005`, matching every config, so `P001`-`P003` never fire. `P010` records the versions. |
-| 67 species | Clean on reference identity — tier 3a confirms what the prototype measured: every VCF contig set exactly equals its assembly's sequence set, matching lengths, consistent GenBank naming, and BAM `@SQ` agreeing throughout. `F009` and `F011` therefore never fire, so the 1% threshold is untested by real data — the detectors are covered by negative controls in `tests/test_tier3a.py` instead. |
+| `<corpus>` | `G020` — `GCA_028023285.1` (*Balaenoptera ricei*) is published and in the VGP list, but has no species directory. |
+
+### Publication status
+
+```
+complete   67
+partial     2   grus-americana, panthera-onca
+absent     10   caprimulgus-europaeus, haliaeetus-albicilla, sturnus-vulgaris,
+                taeniopygia-guttata, astatotilapia-calliptera, coregonus-lavaretus,
+                arvicola-amphibius, macrotis-lagotis, myotis-nattereri,
+                notamacropus-eugenii
+optional:  filtered_vcf 13/69, published_readme 68/69, repo_readme 57/69
+```
+
+`filtered_vcf` is 13 of 69 rather than 14: fourteen accessions publish one, and
+the fourteenth is the *Balaenoptera ricei* orphan with no species directory.
+
+### Silent checks
+
+31 of 42 checks fire on nothing: all of tier 3a, all of tier 4's comparisons, and
+most of tier 1's integrity checks. That is good news about the data, but it means
+those checks are load-bearing only through their negative controls in the test
+suite — `tests/test_tier3a.py` and `tests/test_tier4.py` exist for exactly that
+reason.
+
+The corpus is clean on: reference identity (every VCF contig set exactly equals
+its assembly's sequence set, matching lengths, consistent GenBank naming, BAM
+`@SQ` agreeing throughout), provenance (all 67 published VCFs record GATK 4.6.2.0
+with `--sample-ploidy 2` and `--heterozygosity 0.005`, matching every config), and
+canonicality for 77 of 79 species.
 
 Corpus coverage: the VGP list holds 124 species, the repo 79, so 47 listed
 species have no repo directory yet. That is expected backlog, not a finding —
 `G020` fires only where data exists on GenomeArk without repo metadata.
-
-Three of these were missed by the original prototype and only appeared once the
-real check catalog ran: `S002` on `grus-americana`, `R017` on `anser-anser`, and
-`S006` on `shinisaurus-crocodilurus`.
 
 ## Open questions
 

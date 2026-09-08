@@ -67,17 +67,19 @@ def run(
         checks_run=[c.id for c in checks],
     )
 
-    def work(species: SpeciesMetadata) -> list[Finding]:
-        findings, _ = run_species(species, gatherer, checks, vgp_list=vgp_list)
-        return findings
+    def work(species: SpeciesMetadata):
+        return run_species(species, gatherer, checks, vgp_list=vgp_list)
 
     if len(species_list) == 1 or options.workers <= 1:
-        for species in species_list:
-            report.extend(work(species))
+        outcomes = [work(species) for species in species_list]
     else:
         with ThreadPoolExecutor(max_workers=options.workers) as pool:
-            for findings in pool.map(work, species_list):
-                report.extend(findings)
+            outcomes = list(pool.map(work, species_list))
+
+    for findings, context in outcomes:
+        report.extend(findings)
+        if context.upload_status:
+            report.add_status(context.upload_status)
 
     return report
 

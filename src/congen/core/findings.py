@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Protocol, Sequence
 
+from congen.core.status import PublicationState, UploadStatus
+
 
 class Severity(enum.Enum):
     ERROR = "error"
@@ -104,6 +106,14 @@ class CheckRegistry:
     def __init__(self) -> None:
         self._checks: dict[str, Check] = {}
 
+    #: IDs that were shipped and then withdrawn. Never reused, so a CI
+    #: config suppressing one can never silently start suppressing a
+    #: different check. Registering one is a programming error.
+    retired: frozenset[str] = frozenset()
+
+    def retire(self, *ids: str) -> None:
+        self.retired = self.retired | frozenset(ids)
+
     def register(
         self,
         *,
@@ -116,6 +126,8 @@ class CheckRegistry:
         def decorator(func):
             if id in self._checks:
                 raise ValueError(f"check {id} is already registered")
+            if id in self.retired:
+                raise ValueError(f"check {id} is retired and must not be reused")
             self._checks[id] = Check(
                 id=id,
                 tier=tier,
@@ -213,14 +225,31 @@ class CheckRegistry:
 
 @dataclass
 class Report:
-    """A run's findings plus what was run."""
+    """A run's findings, statuses, and what was run.
+
+    Findings and statuses are separate on purpose: a finding is a defect,
+    a status is a description. See :mod:`congen.core.status`.
+    """
 
     findings: list[Finding] = field(default_factory=list)
     subjects: list[str] = field(default_factory=list)
     checks_run: list[str] = field(default_factory=list)
+    statuses: list[UploadStatus] = field(default_factory=list)
 
     def extend(self, findings: Iterable[Finding]) -> None:
         self.findings.extend(findings)
+
+    def add_status(self, status: UploadStatus) -> None:
+        self.statuses.append(status)
+
+    def status_counts(self) -> dict[PublicationState, int]:
+        out = {state: 0 for state in PublicationState}
+        for status in self.statuses:
+            out[status.state] += 1
+        return out
+
+    def subjects_in_state(self, state: PublicationState) -> list[str]:
+        return [s.subject for s in self.statuses if s.state is state]
 
     def counts(self) -> dict[Severity, int]:
         out = {severity: 0 for severity in Severity}
