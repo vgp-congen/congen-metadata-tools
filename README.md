@@ -18,6 +18,7 @@ and 4 over one species or the whole corpus, plus tier 5 behind `--check-sra`.
 | `congen.core.cache` | ETag-aware JSON disk cache |
 | `congen.core.findings` | severities, findings, the check registry |
 | `congen.core.status` | publication state: absent / partial / complete |
+| `congen.core.validation_record` | report schema, content digests, staleness |
 | `congen.core.report` | human / JSON / GitHub-annotation renderers |
 | `congen.core.metadata` | tolerant loaders, models, species discovery, VGP list |
 | `congen.core.metadata.writers` | round-trip YAML, managed blocks, atomic writes |
@@ -39,6 +40,24 @@ congen validate --list-checks                # the catalog
 congen validate --all --json report.json --strict
 congen validate --all --check-sra              # + NCBI SRA cross-checks (tier 5)
 ```
+
+### Validation reports
+
+`--write-reports` writes `VALIDATION.md` and `validation.json` into each species
+directory, and a `VALIDATION.md` table at the repo root. This is the only part of
+the tool that writes to congen-metadata; without the flag it is read-only.
+
+```bash
+congen validate --all   --write-reports --check-sra   # force: revalidate everything
+congen validate --stale --write-reports --check-sra   # only what needs it
+congen validate --check-stale                         # offline: what is out of date
+congen validate --mark-stale                          # offline: stamp those STALE
+```
+
+A validation is a claim about specific inputs, so a report records SHA-256
+digests of the metadata it validated and the S3 ETags of the data. Staleness is
+then a pure function of the current files — content, not mtimes, because git does
+not preserve mtimes.
 
 Tier 5 is opt-in: it is the only tier whose cost scales with sample count rather
 than species count. Set `NCBI_API_KEY` to raise the eutils rate cap from 3/s to

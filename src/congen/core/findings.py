@@ -235,6 +235,9 @@ class Report:
     subjects: list[str] = field(default_factory=list)
     checks_run: list[str] = field(default_factory=list)
     statuses: list[UploadStatus] = field(default_factory=list)
+    #: Per-subject gather context, for callers that need more than findings
+    #: (the report writer needs the inventory and resolved accession).
+    contexts: dict = field(default_factory=dict)
 
     def extend(self, findings: Iterable[Finding]) -> None:
         self.findings.extend(findings)

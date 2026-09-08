@@ -93,6 +93,7 @@ def run(
         if context.upload_status:
             report.add_status(context.upload_status)
 
+    report.contexts = {c.subject: c for _, c in outcomes}
     return report
 
 

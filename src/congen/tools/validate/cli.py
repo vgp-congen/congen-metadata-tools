@@ -16,7 +16,19 @@ from congen.tools.validate.context import (
     DEFAULT_MISSING_THRESHOLD,
     ContextGatherer,
 )
+from congen.core.remote.genomeark import GenomeArk
+from congen.core.validation_record import catalog_digest
 from congen.tools.validate.registry import registry
+from congen.tools.validate.reports import (
+    check_stale as check_stale_reports,
+)
+from congen.tools.validate.reports import (
+    mark_species_stale,
+    record_for,
+    stale_species,
+    write_corpus_report,
+    write_species_report,
+)
 from congen.tools.validate.runner import (
     DEFAULT_WORKERS,
     RunOptions,
@@ -67,6 +79,27 @@ def _split(values: tuple[str, ...]) -> list[str] | None:
 )
 @click.option("--workers", type=int, default=DEFAULT_WORKERS, show_default=True)
 @click.option(
+    "--write-reports",
+    is_flag=True,
+    help="Write VALIDATION.md and validation.json into congen-metadata.",
+)
+@click.option(
+    "--stale",
+    "stale_only",
+    is_flag=True,
+    help="Validate only species needing revalidation (implies --all).",
+)
+@click.option(
+    "--check-stale",
+    is_flag=True,
+    help="Offline: exit non-zero listing reports whose inputs have changed.",
+)
+@click.option(
+    "--mark-stale",
+    is_flag=True,
+    help="Offline: stamp STALE on reports whose inputs have changed.",
+)
+@click.option(
     "--check-sra",
     is_flag=True,
     help="Also validate sheet accessions against NCBI SRA (tier 5).",
@@ -90,6 +123,10 @@ def validate(
     missing_contig_threshold: float,
     workers: int,
     check_sra: bool,
+    write_reports: bool,
+    stale_only: bool,
+    check_stale: bool,
+    mark_stale: bool,
     no_cache: bool,
     list_checks: bool,
 ) -> None:
@@ -103,15 +140,52 @@ def validate(
             click.echo(f"{check.id}  {str(check.severity):8s} {check.summary}  [needs: {needs}]")
         return
 
-    if not targets and not all_species:
-        raise click.UsageError("give one or more species, or --all")
-
     try:
         repo = SpeciesRepo(metadata_root) if metadata_root else SpeciesRepo.discover()
     except MetadataRootNotFound as exc:
         raise click.ClickException(str(exc)) from exc
 
-    if all_species:
+    gatherer_cache = Cache(enabled=not no_cache)
+    options = RunOptions(
+        only=_split(only), skip=_split(skip), workers=workers, check_sra=check_sra
+    )
+    catalog = catalog_digest(selected_checks(options))
+
+    # Offline modes: no network, no validation, just the digest comparison.
+    if check_stale or mark_stale:
+        if mark_stale:
+            written = [w for w in mark_species_stale(repo) if w.changed]
+            for result in written:
+                click.echo(f"marked stale: {result.subject}")
+            click.echo(f"{len(written)} report(s) stamped STALE")
+            sys.exit(0)
+        outstanding = check_stale_reports(repo)
+        for subject, reason in outstanding:
+            click.echo(f"{subject}: {reason}")
+        if outstanding:
+            click.echo(
+                f"\n{len(outstanding)} report(s) no longer describe their inputs. "
+                "Run: congen validate --mark-stale",
+                err=True,
+            )
+            sys.exit(1)
+        click.echo("all validation reports describe their current inputs")
+        sys.exit(0)
+
+    if not targets and not all_species and not stale_only:
+        raise click.UsageError("give one or more species, --all, or --stale")
+
+    stale_reasons: dict[str, str] = {}
+    if stale_only:
+        pending = stale_species(
+            repo, GenomeArk(gatherer_cache), catalog=catalog
+        )
+        species_list = [s for s, _ in pending]
+        stale_reasons = {s.key: v.reason or "" for s, v in pending}
+        if not species_list:
+            click.echo("nothing to revalidate: every report is current")
+            sys.exit(0)
+    elif all_species:
         species_list = [repo.load_dir(d) for d in repo.species_dirs(clade=clade)]
     else:
         try:
@@ -120,13 +194,10 @@ def validate(
             raise click.ClickException(str(exc)) from exc
 
     gatherer = ContextGatherer(
-        cache=Cache(enabled=not no_cache),
+        cache=gatherer_cache,
         bam_sample=bam_sample,
         all_bams=all_bams,
         missing_contig_threshold=missing_contig_threshold,
-    )
-    options = RunOptions(
-        only=_split(only), skip=_split(skip), workers=workers, check_sra=check_sra
     )
     if not selected_checks(options):
         raise click.UsageError(
@@ -135,7 +206,11 @@ def validate(
 
     report = run(repo, species_list, gatherer, options)
 
-    if all_species and not clade:
+    if stale_only and stale_reasons:
+        for subject, reason in sorted(stale_reasons.items()):
+            click.echo(f"revalidated {subject}: {reason}", err=True)
+
+    if (all_species or stale_only) and not clade:
         orphans = orphan_findings(repo, gatherer)
         if orphans:
             report.subjects.append("<corpus>")
@@ -156,4 +231,51 @@ def validate(
         json_path.write_text(render_json(report), "utf-8")
         click.echo(f"wrote {json_path}", err=True)
 
+    if write_reports:
+        _write_reports(
+            repo,
+            report,
+            species_list,
+            options,
+            catalog,
+            # The corpus table is assembled from every species' JSON on
+            # disk, not just the ones this run touched, so a --stale run
+            # still produces a complete and accurate table.
+            full=(all_species or stale_only) and not clade,
+        )
+
     sys.exit(report.exit_code(strict=strict))
+
+
+def _write_reports(repo, report, species_list, options, catalog, *, full: bool) -> None:
+    """Write per-species reports, and the corpus table after a full run."""
+    checks = selected_checks(options)
+    available = len(registry.all)
+    changed = 0
+    for species in species_list:
+        context = report.contexts.get(species.key)
+        if context is None:
+            continue
+        record = record_for(
+            species,
+            [f for f in report.findings if f.subject == species.key],
+            context,
+            checks_run=[c.id for c in checks],
+            checks_available=available,
+            catalog=catalog,
+        )
+        if write_species_report(species, record).changed:
+            changed += 1
+    click.echo(f"wrote {len(species_list)} species report(s), {changed} changed", err=True)
+
+    if full:
+        result = write_corpus_report(repo, report)
+        click.echo(
+            f"corpus report {'updated' if result.changed else 'unchanged'}", err=True
+        )
+    else:
+        click.echo(
+            "corpus report not written: it is only meaningful after an unfiltered "
+            "--all run",
+            err=True,
+        )

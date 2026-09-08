@@ -678,7 +678,7 @@ itself needs its own design pass.
    see a diff on every run. Pair the tool with `--check` (exit non-zero if
    regenerating would change anything), which is what makes it CI-usable.
 
-## Part 4 — validation reports (planned)
+## Part 4 — validation reports
 
 **The report is documentation, not a CI artifact.** Someone deciding whether to
 rely on a species' metadata has to see the answer at a glance, in the species
@@ -811,11 +811,20 @@ the window in which a consumer could read `PASS` from a report that no longer
 describes the files next to it.
 
 `congen validate --mark-stale` does the stamping — offline, instant, no network —
-and `--check-stale` exits non-zero listing any report that needs it. Recommended
-shape is for CI to run `--check-stale` and fail with the exact command to run,
-rather than having a bot commit to the contributor's branch: that works for forks
-and needs no write token. A bot commit is the alternative if contributors all
-push to branches in-repo and the friction is unwelcome.
+and `--check-stale` exits non-zero listing any report that needs it.
+
+> **Deferred.** How the stamp gets into a pull request is not decided. CI running
+> `--check-stale` and failing with the command to run works for forks and needs
+> no write token; a bot running `--mark-stale` and committing to the branch is
+> less friction but fails silently on fork PRs, where `GITHUB_TOKEN` is
+> read-only. The tool supports either. Nothing in `congen-metadata-tools`
+> depends on the answer, so it can wait until the CI workflows are written.
+
+Note that `--check-stale` and `--mark-stale` deliberately **ignore the check
+catalog**. A catalog change means a species should be *revalidated*, which is
+`--stale`'s business, but it does not make an existing report describe the wrong
+files — and including it would make the offline check's result depend on whether
+`--check-sra` was passed.
 
 **The nightly** runs `--stale --write-reports`: on a quiet corpus that is zero
 species and near-zero cost. `--all` stays available as a periodic audit.
@@ -834,6 +843,19 @@ verdict, the readme tool decides whether to surface it.
 The terminal summary for `--all` grows the same table; the current one-line
 summary is too thin for a batch run.
 
+### The four modes
+
+```bash
+congen validate <species> --write-reports    # validate one species, write its report
+congen validate --all     --write-reports    # force: revalidate everything
+congen validate --stale   --write-reports    # only what needs it (the nightly)
+congen validate --check-stale                # offline: which reports are out of date
+congen validate --mark-stale                 # offline: stamp them STALE
+```
+
+"Force rerun everything" needs no flag of its own: `--all` already means every
+species and `--stale` is the filter.
+
 ### Implementation notes
 
 * `core/report/markdown.py` renders both documents, and is the renderer
@@ -843,9 +865,14 @@ summary is too thin for a batch run.
 * `writers.atomic_write` and `write_if_changed` already exist for this.
 * Reports are fully generated, so no managed blocks: unlike a README, nothing in
   them is hand-written.
-* A partial check selection must be recorded in the report ("checks run: 12 of
-  45") so a filtered report cannot be read as a full one; the corpus summary is
-  written only from an unfiltered run.
+* A partial check selection is recorded in the report ("1 of 45 checks — **a
+  partial selection**") so a filtered report cannot be read as a full one.
+* The corpus table is assembled from every species' `validation.json` on disk
+  rather than from the run, so it stays complete and accurate after a `--stale`
+  run that touched only a handful of species.
+* A `STALE` report renders its old findings **only** inside the collapsed
+  superseded block. Leaving them inline would defeat the stamp: the point is
+  that the old verdict must not read as current.
 
 ## Milestones
 
@@ -865,13 +892,13 @@ summary is too thin for a batch run.
    milestone 2.
 5. **Done.** Tier 5 behind `--check-sra`, on NCBI SRA, plus the per-host rate
    limiter in `core.http`.
-6. **Validation reports** (Part 4): the record schema and staleness predicate,
-   the markdown renderer, `--write-reports` / `--stale` / `--check-stale` /
-   `--mark-stale`, and the corpus summary.
-7. **CI workflows** for `congen-metadata`, once Part 4 defines what they run:
-   tier 0 plus `--check-stale` on pull requests, `--stale --write-reports`
-   nightly. Deferred until then, because the reports are what the workflows are
-   for. `core.remote.qc` grows its coverage readers with `readme`.
+6. **Done.** Validation reports (Part 4): the record schema and staleness
+   predicate, the markdown renderer, and the four modes.
+7. **CI workflows** for `congen-metadata` — deferred, along with the question of
+   how the `STALE` stamp reaches a pull request. The tool supports either
+   answer.
+8. **`congen readme`** (Part 3), which reuses the markdown renderer and grows
+   `core.remote.qc` into the coverage tables.
 
 Regression-test milestone 2 against the baseline: the counts below are the
 expected output, and any change to them should be explained.
