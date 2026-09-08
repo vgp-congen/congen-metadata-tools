@@ -678,6 +678,175 @@ itself needs its own design pass.
    see a diff on every run. Pair the tool with `--check` (exit non-zero if
    regenerating would change anything), which is what makes it CI-usable.
 
+## Part 4 — validation reports (planned)
+
+**The report is documentation, not a CI artifact.** Someone deciding whether to
+rely on a species' metadata has to see the answer at a glance, in the species
+directory. That rules out git history, diffs, pull requests and issues as the
+mechanism: all of them are invisible to the person who just opened
+`species/birds/foo/` and wants to know whether they can trust it.
+
+This reverses the read-only decision in Part 2, and only for this: writing stays
+behind `--write-reports`, so a bare `congen validate` remains read-only and safe
+in CI. `writes_metadata` on the tool registration comes to mean *capable of
+writing* rather than *always writes*.
+
+### What a validation actually claims
+
+A validation is not a health check that expires with age. It is a claim about a
+specific pair of inputs — *this* metadata, against *that* published data. The
+claim stays true until one of those inputs changes. So the default is not
+"revalidate everything nightly" but "revalidate what is stale", and staleness is
+a property of the inputs, not of the calendar.
+
+### Layout
+
+```
+species/{clade}/{slug}/
+    VALIDATION.md          generated — the at-a-glance verdict
+    validation.json        generated — machine-readable, carries the input digests
+VALIDATION.md              generated — the corpus table
+validation.json            generated — machine-readable corpus summary
+```
+
+Top level of the species directory rather than a `validation/` subdirectory:
+discoverability beats tidiness here, and burying the one file a consumer needs
+defeats its purpose. Uppercase for the human document, lowercase for the data,
+matching the existing `README.txt` / `config.yaml` split.
+
+Every species gets a `VALIDATION.md`, including ones with no published data, so
+the absence of the file is never ambiguous.
+
+### Staleness must be content-based
+
+**Git does not preserve mtimes.** A fresh clone stamps every file with checkout
+time, so "config.yaml is newer than the report" is unreliable in exactly the
+places that matter — CI, and anyone else's machine. Comparing against `git log`
+would work but needs a git checkout and a subprocess per file.
+
+So a report records digests of what it validated, and staleness is a pure
+function of the current inputs:
+
+```json
+"validated": {
+  "at": "2026-09-08T14:23:11Z",
+  "tool_version": "0.1.0",
+  "catalog": "sha256:...",
+  "inputs": {
+    "config.yaml":      "sha256:...",
+    "sample_sheet.csv": "sha256:...",
+    "README.txt":       "sha256:..."
+  },
+  "data": {
+    "accession":  "GCA_027172205.1",
+    "raw.vcf.gz": "etag:9a6aba769820...",
+    "bams":       {"count": 21, "digest": "sha256:..."}
+  }
+}
+```
+
+The data-side digests are free: S3 listings already return ETags and
+`core.remote.genomeark` already parses them.
+
+`catalog` is a digest of the sorted `(check_id, severity)` pairs, not the release
+version. A report should be invalidated when the *checks* change — one added, one
+re-severitied — but not by a bugfix release that would leave every verdict
+identical. A catalog change does invalidate the whole corpus, which is correct
+and affordable: a full run is ~85s.
+
+### A species needs revalidation when
+
+1. it has no report;
+2. an input digest no longer matches (metadata edited);
+3. a data digest no longer matches, or data has appeared for a species that had
+   none — one bucket listing covers the whole corpus;
+4. the check catalog changed;
+5. the last report recorded errors or warnings, so the fix can be noticed.
+
+### Report states
+
+| State | Meaning |
+|---|---|
+| `PASS` | validated, no errors or warnings |
+| `PASS WITH WARNINGS` | validated, warnings only |
+| `FAIL` | errors found |
+| `PENDING` | no data published yet; metadata checks pass. **Expected, not a failure** — pushing a config and sheet before the run exists is normal |
+| `STALE` | inputs changed since the last validation; the recorded verdict no longer describes the current files |
+
+The first three lines of `VALIDATION.md` carry the whole verdict, because that is
+all most readers will get to:
+
+```markdown
+# Validation — Podarcis raffonei
+
+**PASS** · 2026-09-08 · GCA_027172205.1
+21 samples · sheet, BAMs and VCF agree · reference confirmed against NCBI
+```
+
+A stale report keeps its old result but cannot be mistaken for current:
+
+```markdown
+# Validation — Podarcis raffonei
+
+**STALE** · metadata changed after the last validation (2026-09-08)
+The verdict below described `config.yaml` and `sample_sheet.csv` as they were;
+they have changed since. Revalidation pending.
+
+<details><summary>Superseded result — PASS, 2026-09-08</summary>
+...
+</details>
+```
+
+### Who writes, and when
+
+**Pull requests never validate against GenomeArk.** A config and sample sheet
+routinely land before the data does, so a validating PR check would fail on a
+perfectly normal state. What a PR can do is offline and always meaningful:
+
+* run tier 0, which needs no network;
+* **stamp `STALE` immediately** on any report whose inputs the PR changed.
+
+Stamping at PR time rather than waiting for the nightly is deliberate: it closes
+the window in which a consumer could read `PASS` from a report that no longer
+describes the files next to it.
+
+`congen validate --mark-stale` does the stamping — offline, instant, no network —
+and `--check-stale` exits non-zero listing any report that needs it. Recommended
+shape is for CI to run `--check-stale` and fail with the exact command to run,
+rather than having a bot commit to the contributor's branch: that works for forks
+and needs no write token. A bot commit is the alternative if contributors all
+push to branches in-repo and the friction is unwelcome.
+
+**The nightly** runs `--stale --write-reports`: on a quiet corpus that is zero
+species and near-zero cost. `--all` stays available as a periodic audit.
+
+### Corpus summary
+
+Root `VALIDATION.md`: counts by state, a one-line-per-species table linking to
+each report, corpus-level findings such as `G020`, the run timestamp and the
+catalog digest. Kept as its own file rather than folded into the root `README.md`
+for now; incorporating it later is a one-line include.
+
+`congen readme` can likewise pull the species verdict into the generated README
+when it exists, which keeps the two tools decoupled — the validator owns the
+verdict, the readme tool decides whether to surface it.
+
+The terminal summary for `--all` grows the same table; the current one-line
+summary is too thin for a batch run.
+
+### Implementation notes
+
+* `core/report/markdown.py` renders both documents, and is the renderer
+  `congen readme` will reuse.
+* `core/validation_record.py` owns the digest computation, the record schema and
+  the staleness predicate — shared by the validator and, later, any status tool.
+* `writers.atomic_write` and `write_if_changed` already exist for this.
+* Reports are fully generated, so no managed blocks: unlike a README, nothing in
+  them is hand-written.
+* A partial check selection must be recorded in the report ("checks run: 12 of
+  45") so a filtered report cannot be read as a full one; the corpus summary is
+  written only from an unfiltered run.
+
 ## Milestones
 
 1. **Done.** `core.http`, `core.remote.headers`, `core.metadata` loaders +
@@ -693,9 +862,16 @@ itself needs its own design pass.
 3. **Done.** Tier 3a, with the NCBI assembly-report cache, `core.remote.qc`
    for `contig_map.tsv`, and the `F010` fallback for a non-NCBI reference.
 4. **Done.** Tier 4. Batch mode and orphan detection (`G020`/`G021`) landed in
-   milestone 2, and the CI workflow is deferred.
-5. **Tier 5** behind `--check-sra`, on NCBI SRA, plus the per-host rate limiter
-   in `core.http`. `core.remote.qc` grows its coverage readers with `readme`.
+   milestone 2.
+5. **Done.** Tier 5 behind `--check-sra`, on NCBI SRA, plus the per-host rate
+   limiter in `core.http`.
+6. **Validation reports** (Part 4): the record schema and staleness predicate,
+   the markdown renderer, `--write-reports` / `--stale` / `--check-stale` /
+   `--mark-stale`, and the corpus summary.
+7. **CI workflows** for `congen-metadata`, once Part 4 defines what they run:
+   tier 0 plus `--check-stale` on pull requests, `--stale --write-reports`
+   nightly. Deferred until then, because the reports are what the workflows are
+   for. `core.remote.qc` grows its coverage readers with `readme`.
 
 Regression-test milestone 2 against the baseline: the counts below are the
 expected output, and any change to them should be explained.
