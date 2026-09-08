@@ -488,6 +488,21 @@ may legitimately have been edited after a run.
 | `P001` | warn | `##GATKCommandLine … --sample-ploidy` == `variant_calling.ploidy` |
 | `P002` | warn | `--heterozygosity` == `variant_calling.gatk.het_prior` |
 | `P003` | warn | caller in the header is consistent with `variant_calling.tool` |
+| `P010` | info | records the pipeline versions the header stamps (GATK, bcftools) |
+
+**Caller detection looks for `bcftools_call`, never bcftools in general.**
+snpArcher merges its per-interval VCFs with `bcftools concat`, so every
+GATK-called VCF in the corpus carries `##bcftools_concatCommand`. Reading that as
+the caller would mislabel all 67 of them. `P003` also treats GATK evidence as
+consistent with a `parabricks` config, since parabricks emits GATK-compatible
+headers, and stays silent on a header it does not recognize — absence of evidence
+is not evidence of a different caller.
+
+`P010` is inventory rather than judgement: there is nothing in `config.yaml` to
+compare a tool version against, but the corpus sitting on one GATK version is
+worth being able to see, and it is the first thing to look at when results shift
+between runs. Numbered `P010` because `P004` and `P005` were the retired
+`postprocess` drift checks and IDs are not reused.
 
 #### Tier 5 — external accessions (opt-in, `--check-sra`)
 
@@ -612,8 +627,8 @@ itself needs its own design pass.
    call, and it already catches two real errors. Reproduces the baseline below.
 3. **Done.** Tier 3a, with the NCBI assembly-report cache, `core.remote.qc`
    for `contig_map.tsv`, and the `F010` fallback for a non-NCBI reference.
-4. **Tier 4 and the CI workflow.** Batch mode and orphan detection
-   (`G020`/`G021`) landed in milestone 2 rather than here.
+4. **Done.** Tier 4. Batch mode and orphan detection (`G020`/`G021`) landed in
+   milestone 2, and the CI workflow is deferred.
 5. **Tier 5** behind `--check-sra`, and `core.remote.qc` in support of `readme`.
 
 Regression-test milestone 2 against the baseline: the counts below are the
@@ -641,6 +656,7 @@ to them should be explained.
 | 22 species | `R021` — no `README.txt`. |
 | 77 species | Clean on canonicality — `reference.source` is exactly the VGP main-haplotype accession. |
 | 66 species | Clean on sample identity. |
+| 67 species | Clean on provenance — every published VCF records GATK 4.6.2.0 with `--sample-ploidy 2` and `--heterozygosity 0.005`, matching every config, so `P001`-`P003` never fire. `P010` records the versions. |
 | 67 species | Clean on reference identity — tier 3a confirms what the prototype measured: every VCF contig set exactly equals its assembly's sequence set, matching lengths, consistent GenBank naming, and BAM `@SQ` agreeing throughout. `F009` and `F011` therefore never fire, so the 1% threshold is untested by real data — the detectors are covered by negative controls in `tests/test_tier3a.py` instead. |
 
 Corpus coverage: the VGP list holds 124 species, the repo 79, so 47 listed

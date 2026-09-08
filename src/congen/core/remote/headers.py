@@ -144,6 +144,57 @@ class VcfHeader:
     def gatk_command_lines(self) -> list[str]:
         return self.meta("GATKCommandLine")
 
+    @property
+    def meta_keys(self) -> list[str]:
+        """Every ``##key`` present, in file order, without duplicates."""
+        out: list[str] = []
+        for line in self.lines:
+            if not line.startswith("##") or "=" not in line:
+                continue
+            key = line[2:].split("=", 1)[0]
+            if key not in out:
+                out.append(key)
+        return out
+
+    def gatk_tool_ids(self) -> list[str]:
+        """The ``ID=`` of each recorded GATK invocation, in file order."""
+        out: list[str] = []
+        for command in self.gatk_command_lines:
+            match = re.match(r"<ID=([^,>]+)", command)
+            if match and match.group(1) not in out:
+                out.append(match.group(1))
+        return out
+
+    def tool_versions(self) -> dict[str, str]:
+        """Pipeline component versions the header records.
+
+        GATK stamps ``Version=`` on each command line; bcftools writes a
+        ``##bcftools_<op>Version`` line per operation.
+        """
+        versions: dict[str, str] = {}
+        for command in self.gatk_command_lines:
+            match = re.search(r'Version="?([0-9][^",\s]*)', command)
+            if match:
+                versions.setdefault("gatk", match.group(1))
+        for line in self.lines:
+            match = re.match(r"##bcftools_\w+Version=(\S+)", line)
+            if match:
+                versions.setdefault("bcftools", match.group(1).split("+")[0])
+        return versions
+
+    def callers(self) -> set[str]:
+        """Variant callers the header gives positive evidence for.
+
+        Empty when nothing recognizable is recorded, which is a reason to
+        say nothing rather than to guess.
+        """
+        found: set[str] = set()
+        for line in self.lines:
+            for caller, pattern in CALLER_EVIDENCE:
+                if re.match(pattern, line):
+                    found.add(caller)
+        return found
+
     def gatk_argument(self, name: str) -> str | None:
         """First value of ``--name`` across the recorded GATK invocations.
 
@@ -204,6 +255,25 @@ def read_vcf_header(
                 f"VCF header not complete within {max_window} bytes: {source.label}"
             )
         window = min(window * 4, max_window)
+
+
+#: Header evidence that positively identifies a *variant caller*.
+#:
+#: The bcftools entry is deliberately restricted to ``bcftools_call``.
+#: snpArcher concatenates its per-interval VCFs with ``bcftools concat``,
+#: so every GATK-called VCF in the corpus also carries
+#: ``##bcftools_concatCommand`` — reading that as the caller would
+#: mislabel all 67 of them.
+CALLER_EVIDENCE: tuple[tuple[str, str], ...] = (
+    ("gatk", r"^##GATKCommandLine=<ID=(?:HaplotypeCaller|GenotypeGVCFs|Mutect2)\b"),
+    ("gatk", r"^##source=(?:HaplotypeCaller|GenotypeGVCFs|Mutect2)\b"),
+    ("bcftools", r"^##bcftools_callCommand="),
+    ("bcftools", r"^##source=bcftools_call\b"),
+    ("deepvariant", r"^##DeepVariant"),
+    ("deepvariant", r"^##source=DeepVariant\b"),
+    ("sentieon", r"^##source=(?:Sentieon|DNAscope|DNAseq)\b"),
+    ("freebayes", r"^##source=freeBayes\b"),
+)
 
 
 @dataclass
