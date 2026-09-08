@@ -90,6 +90,12 @@ def inputs_belong_to_their_biosample(context: Context) -> list[Finding]:
     needs=(SHEET, SRA, README),
 )
 def run_bioprojects_are_documented(context: Context) -> list[Finding]:
+    """Runs are drawn from a bioproject the README does not cite.
+
+    Usually means a README lists the assembly's BioProject rather than
+    the one holding the reads, or that samples were added from a project
+    nobody recorded. Affects citation, not data correctness.
+    """
     assert context.sra and context.readme
     documented = set(context.readme.bioprojects)
     if not documented:
@@ -122,6 +128,12 @@ def run_bioprojects_are_documented(context: Context) -> list[Finding]:
     needs=(SHEET, SRA, README),
 )
 def documented_bioprojects_contribute(context: Context) -> list[Finding]:
+    """The README cites a bioproject that contributes no reads.
+
+    Often the RefSeq genome-assembly BioProject, which by definition
+    holds no runs; the reads live under a separate raw-reads project.
+    Frequently appears alongside `E002`, as two views of one mistake.
+    """
     assert context.sra and context.readme
     documented = set(context.readme.bioprojects)
     if not documented:

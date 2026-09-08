@@ -31,6 +31,12 @@ def _assembly_label(context: Context) -> str:
     needs=(VGP, CONFIG),
 )
 def reference_is_the_vgp_assembly(context: Context) -> list[Finding]:
+    """The config names an assembly that is not the VGP reference.
+
+    Not a GCA/GCF namespace variant of the right one — see `F021` for
+    that — but a different assembly altogether, so any run against it
+    used the wrong genome.
+    """
     entry = context.vgp_entry
     declared = context.declared_accession
     if not entry or not declared:

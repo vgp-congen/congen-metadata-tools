@@ -73,13 +73,20 @@ def _facts(record: ValidationRecord) -> str | None:
     return " · ".join(parts) if parts else None
 
 
-def _finding_lines(record: ValidationRecord, severity: str) -> list[str]:
+def _finding_lines(
+    record: ValidationRecord, severity: str, *, checks_href: str | None = None
+) -> list[str]:
     out = []
     for finding in record.findings:
         if finding["severity"] != severity:
             continue
-        line = f"- **{finding['id']}** {finding['message']}"
-        out.append(line)
+        identifier = finding["id"]
+        label = (
+            f"[{identifier}]({checks_href}#{identifier.lower()})"
+            if checks_href
+            else identifier
+        )
+        out.append(f"- **{label}** {finding['message']}")
         if finding.get("detail"):
             out.append(f"  - {finding['detail']}")
         if finding.get("path"):
@@ -90,7 +97,10 @@ def _finding_lines(record: ValidationRecord, severity: str) -> list[str]:
     return out
 
 
-def render_species_report(record: ValidationRecord, species_name: str) -> str:
+def render_species_report(
+    record: ValidationRecord, species_name: str, *, checks_href: str | None = None
+) -> str:
+    """``checks_href`` links each finding ID to the generated CHECKS.md."""
     lines = _headline(record, species_name)
 
     facts = _facts(record)
@@ -105,7 +115,7 @@ def render_species_report(record: ValidationRecord, species_name: str) -> str:
             ("warn", "Warnings"),
             ("info", "Notes"),
         ):
-            body = _finding_lines(record, severity)
+            body = _finding_lines(record, severity, checks_href=checks_href)
             if body:
                 lines += ["", f"## {heading}", ""] + body
 
@@ -205,4 +215,89 @@ def render_corpus_report(
         )
 
     lines += ["", GENERATED_NOTE, ""]
+    return "\n".join(lines)
+
+
+CHECKS_FILE = "CHECKS.md"
+
+TIER_TITLES = {
+    "R": "Repository self-consistency",
+    "G": "Publication on GenomeArk",
+    "S": "Sample identity",
+    "F": "Reference identity and canonicality",
+    "P": "Config against recorded provenance",
+    "E": "External accessions (NCBI SRA)",
+}
+
+SEVERITY_NOTE = {
+    "error": "a defect: do not rely on this metadata until it is resolved",
+    "warn": "worth attention, but not disqualifying",
+    "info": "recorded for reference; no action implied",
+}
+
+
+def _docstring_paragraphs(text: str | None) -> list[str]:
+    """Every paragraph, reflowed.
+
+    Not just the first: the checks put the headline in paragraph one and
+    the reason it matters in paragraph two, and the reason is the part a
+    reader chasing an ID actually needs.
+    """
+    if not text:
+        return []
+    out = []
+    for block in text.strip().split("\n\n"):
+        joined = " ".join(line.strip() for line in block.splitlines() if line.strip())
+        if joined:
+            out.append(joined)
+    return out
+
+
+def render_checks_reference(checks, *, tool_version: str) -> str:
+    """The lookup table for the IDs that appear in validation reports.
+
+    Generated from the registry so it cannot drift from the code — the
+    failure mode for a hand-maintained reference is that it quietly stops
+    describing what the tool does.
+    """
+    import inspect
+
+    lines = [
+        "# Validation checks",
+        "",
+        "Every finding in a `VALIDATION.md` carries an ID. This is what they mean.",
+        "",
+        f"Generated from congen-metadata-tools {tool_version}; {len(list(checks))} checks.",
+        "",
+        "Severities:",
+        "",
+    ]
+    for severity, note in SEVERITY_NOTE.items():
+        lines.append(f"- **{severity}** — {note}")
+    lines += [
+        "",
+        "A check may also be *skipped*, which means its inputs were unavailable —",
+        "most often because the species has no published data yet. A skipped check",
+        "is not a pass; the report says how many were skipped and why.",
+        "",
+    ]
+
+    by_tier: dict[str, list] = {}
+    for check in checks:
+        by_tier.setdefault(check.tier, []).append(check)
+
+    for tier in ("R", "G", "S", "F", "P", "E"):
+        group = sorted(by_tier.get(tier, []), key=lambda c: c.id)
+        if not group:
+            continue
+        lines += [f"## {TIER_TITLES.get(tier, tier)}", ""]
+        for check in group:
+            lines.append(f"### {check.id}")
+            lines.append("")
+            lines.append(f"**{check.severity.value}** — {check.summary}")
+            for paragraph in _docstring_paragraphs(inspect.getdoc(check.func)):
+                lines += ["", paragraph]
+            lines.append("")
+
+    lines += [GENERATED_NOTE, ""]
     return "\n".join(lines)

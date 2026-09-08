@@ -15,7 +15,12 @@ from congen.core.findings import Finding, Report, Severity
 from congen.core.metadata.discovery import SpeciesRepo
 from congen.core.metadata.models import SpeciesMetadata
 from congen.core.metadata.writers import write_if_changed
-from congen.core.report.markdown import render_corpus_report, render_species_report
+from congen.core.report.markdown import (
+    CHECKS_FILE,
+    render_checks_reference,
+    render_corpus_report,
+    render_species_report,
+)
 from congen.core.remote.genomeark import GenomeArk
 from congen.core.validation_record import (
     REPORT_JSON,
@@ -62,10 +67,23 @@ class WriteResult:
         return self.markdown_changed or self.json_changed
 
 
+def checks_href(species: SpeciesMetadata, root: Path | None) -> str | None:
+    """Relative link from a species directory up to the corpus CHECKS.md."""
+    if root is None:
+        return None
+    try:
+        depth = len(species.path.relative_to(root).parts)
+    except ValueError:
+        return None
+    return "../" * depth + CHECKS_FILE
+
+
 def write_species_report(
-    species: SpeciesMetadata, record: ValidationRecord
+    species: SpeciesMetadata, record: ValidationRecord, *, root: Path | None = None
 ) -> WriteResult:
-    markdown = render_species_report(record, species_display_name(species))
+    markdown = render_species_report(
+        record, species_display_name(species), checks_href=checks_href(species, root)
+    )
     return WriteResult(
         subject=species.key,
         markdown_changed=write_if_changed(species.path / REPORT_MARKDOWN, markdown),
@@ -81,6 +99,7 @@ def record_for(
     checks_run: list[str],
     checks_available: int,
     catalog: str,
+    root: Path | None = None,
 ) -> ValidationRecord:
     return build_record(
         subject=species.key,
@@ -93,6 +112,7 @@ def record_for(
         checks_available=checks_available,
         catalog=catalog,
         tool_version=tool_version(),
+        root=root,
     )
 
 
@@ -177,6 +197,16 @@ def mark_species_stale(repo: SpeciesRepo, *, catalog: str | None = None) -> list
     return written
 
 
+def write_checks_reference(repo: SpeciesRepo, checks) -> WriteResult:
+    """Write the ID lookup table next to the reports that use it."""
+    markdown = render_checks_reference(checks, tool_version=tool_version())
+    return WriteResult(
+        subject="<checks>",
+        markdown_changed=write_if_changed(repo.root / CHECKS_FILE, markdown),
+        json_changed=False,
+    )
+
+
 def write_corpus_report(
     repo: SpeciesRepo, report: Report, *, validated_at: str | None = None
 ) -> WriteResult:
@@ -232,6 +262,7 @@ __all__ = [
     "record_for",
     "stale_species",
     "tool_version",
+    "write_checks_reference",
     "write_corpus_report",
     "write_species_report",
 ]

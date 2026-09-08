@@ -24,6 +24,7 @@ from congen.tools.validate.reports import (
 )
 from congen.tools.validate.reports import (
     mark_species_stale,
+    write_checks_reference,
     record_for,
     stale_species,
     write_corpus_report,
@@ -263,10 +264,16 @@ def _write_reports(repo, report, species_list, options, catalog, *, full: bool) 
             checks_run=[c.id for c in checks],
             checks_available=available,
             catalog=catalog,
+            root=repo.root,
         )
-        if write_species_report(species, record).changed:
+        if write_species_report(species, record, root=repo.root).changed:
             changed += 1
     click.echo(f"wrote {len(species_list)} species report(s), {changed} changed", err=True)
+
+    reference = write_checks_reference(repo, registry.all)
+    click.echo(
+        f"checks reference {'updated' if reference.changed else 'unchanged'}", err=True
+    )
 
     if full:
         result = write_corpus_report(repo, report)

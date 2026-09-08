@@ -81,6 +81,11 @@ def _compare(
     needs=(SHEET, VCF_HEADER),
 )
 def sheet_matches_vcf(context: Context) -> list[Finding]:
+    """The sheet and the published VCF must name the same biosamples.
+
+    A disagreement means one of them is stale, and which is not
+    derivable from the artifacts — see the note above.
+    """
     assert context.vcf_header
     return _compare(
         context,

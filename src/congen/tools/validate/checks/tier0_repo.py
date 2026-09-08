@@ -98,6 +98,12 @@ def reference_source_is_usable(context: Context) -> list[Finding]:
     needs=(CONFIG,),
 )
 def reference_name_is_a_name(context: Context) -> list[Finding]:
+    """snpArcher stages the reference as ``results/reference/<name>.fa.gz``.
+
+    An accession there means the staged file is named after the accession
+    rather than the species, which is legal but makes the BAM provenance
+    harder to read and breaks the `F006` cross-check.
+    """
     reference = context.species.reference
     if not reference.name:
         return []
@@ -125,6 +131,13 @@ def reference_name_is_a_name(context: Context) -> list[Finding]:
     needs=(),
 )
 def sheet_is_wellformed(context: Context) -> list[Finding]:
+    """Structural problems the sheet loader found.
+
+    Covers a missing or unreadable file, absent required columns, rows
+    with too few fields, an empty ``sample_id``, an unrecognized
+    ``input_type``, and a genuinely repeated ``(sample_id, input)`` pair.
+    A blank row is reported here too, but only as a note.
+    """
     return _from_issues(context, context.sheet.issues, SHEET_ISSUE_MAP)
 
 
@@ -161,6 +174,12 @@ def srr_inputs_are_sra_accessions(context: Context) -> list[Finding]:
     needs=(SHEET,),
 )
 def inputs_are_not_local_paths(context: Context) -> list[Finding]:
+    """A path on someone's cluster cannot be re-fetched by anyone else.
+
+    The run is not reproducible from the sheet alone: whoever repeats it
+    needs the original filesystem. Usually a sign that reads were
+    recovered locally rather than pulled from SRA.
+    """
     out: list[Finding] = []
     for row in context.sheet.rows:
         if not row.is_local_path:

@@ -163,6 +163,21 @@ def load_record(path: Path) -> ValidationRecord | None:
         return None
 
 
+def _relative_finding(finding: Finding, root: Path | None) -> dict:
+    """Serialize a finding with its path relative to the metadata root.
+
+    These files are committed, so an absolute path would bake whoever ran
+    the tool into the repository.
+    """
+    payload = finding.as_dict()
+    if root and payload.get("path"):
+        try:
+            payload["path"] = str(Path(payload["path"]).relative_to(root))
+        except ValueError:
+            pass
+    return payload
+
+
 def build_record(
     *,
     subject: str,
@@ -176,6 +191,7 @@ def build_record(
     catalog: str,
     tool_version: str,
     validated_at: str | None = None,
+    root: Path | None = None,
 ) -> ValidationRecord:
     reportable = [f for f in findings if f.severity is not Severity.SKIPPED]
     return ValidationRecord(
@@ -188,7 +204,10 @@ def build_record(
         checks_available=checks_available,
         inputs=input_digests(species_dir),
         data=data_digests(inventory, accession),
-        findings=[f.as_dict() for f in sorted(findings, key=lambda f: (f.severity.rank, f.id))],
+        findings=[
+            _relative_finding(f, root)
+            for f in sorted(findings, key=lambda f: (f.severity.rank, f.id))
+        ],
         status=status.as_dict() if status else None,
     )
 

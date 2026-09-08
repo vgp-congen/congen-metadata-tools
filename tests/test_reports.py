@@ -195,6 +195,38 @@ class TestWriting:
         assert write_species_report(species, record).changed
         assert not write_species_report(species, record).changed
 
+    def test_finding_paths_are_repo_relative(self, sandbox):
+        """These files are committed; an absolute path bakes in whoever ran it."""
+        from congen.core.findings import Location
+        from congen.core.validation_record import build_record
+
+        species = sandbox.load("reptiles/podarcis-raffonei")
+        record = build_record(
+            subject=species.key,
+            findings=[
+                Finding(
+                    "F020",
+                    Severity.ERROR,
+                    species.key,
+                    "wrong assembly",
+                    location=Location(species.path / "config.yaml", 7),
+                )
+            ],
+            status=None,
+            species_dir=species.path,
+            inventory=None,
+            accession=None,
+            checks_run=["F020"],
+            checks_available=45,
+            catalog="c",
+            tool_version="0.1.0",
+            root=sandbox.root,
+        )
+        assert record.findings[0]["path"] == (
+            "species/reptiles/podarcis-raffonei/config.yaml"
+        )
+        assert str(sandbox.root) not in render_species_report(record, "X")
+
     def test_display_name_prefers_the_reference_name(self, sandbox):
         assert species_display_name(sandbox.load("reptiles/podarcis-raffonei")) == (
             "Podarcis raffonei"
@@ -303,3 +335,88 @@ class TestCliModes:
         assert result.exit_code == 1
         assert "config.yaml changed" in result.output
         assert "congen validate --mark-stale" in result.output
+
+
+class TestChecksReference:
+    """The lookup table for the IDs that appear in reports."""
+
+    def _render(self):
+        import congen.tools.validate.checks  # noqa: F401 - registers catalog
+        from congen.core.report.markdown import render_checks_reference
+        from congen.tools.validate.registry import registry
+
+        return render_checks_reference(registry.all, tool_version="0.1.0")
+
+    def test_every_registered_check_has_an_entry(self):
+        import congen.tools.validate.checks  # noqa: F401
+        from congen.tools.validate.registry import registry
+
+        out = self._render()
+        for check in registry.all:
+            assert f"### {check.id}" in out, check.id
+
+    def test_entries_carry_severity_and_summary(self):
+        out = self._render()
+        assert "**error** — reference.source is the VGP main-haplotype assembly" in out
+
+    def test_docstrings_become_the_explanation(self):
+        out = self._render()
+        assert "The config names an assembly that is not the VGP reference." in out
+
+    def test_every_docstring_paragraph_is_kept(self):
+        """The headline is paragraph one; why it matters is paragraph two."""
+        out = self._render()
+        assert "Not a GCA/GCF namespace variant of the right one" in out
+
+    def test_it_explains_what_skipped_means(self):
+        """A skipped check is not a pass, and a reader must not read it as one."""
+        out = self._render()
+        assert "skipped" in out
+        assert "not a pass" in out
+
+    def test_grouped_by_tier(self):
+        out = self._render()
+        for title in ("Sample identity", "External accessions"):
+            assert f"## {title}" in out
+
+    def test_it_says_it_is_generated(self):
+        assert "do not edit by hand" in self._render()
+
+
+class TestChecksLinking:
+    def test_finding_ids_link_to_the_reference(self, sandbox):
+        from congen.tools.validate.reports import checks_href, write_species_report
+
+        species = sandbox.load("reptiles/podarcis-raffonei")
+        assert checks_href(species, sandbox.root) == "../../../CHECKS.md"
+
+        record = record_for_state(
+            ReportState.FAIL,
+            findings=[
+                {"id": "F020", "severity": "error", "message": "m", "detail": None}
+            ],
+        )
+        write_species_report(species, record, root=sandbox.root)
+        text = (species.path / REPORT_MARKDOWN).read_text()
+        assert "[F020](../../../CHECKS.md#f020)" in text
+
+    def test_no_link_without_a_root(self, sandbox):
+        from congen.tools.validate.reports import write_species_report
+
+        species = sandbox.load("reptiles/podarcis-raffonei")
+        record = record_for_state(
+            ReportState.FAIL,
+            findings=[
+                {"id": "F020", "severity": "error", "message": "m", "detail": None}
+            ],
+        )
+        write_species_report(species, record)
+        assert "**F020**" in (species.path / REPORT_MARKDOWN).read_text()
+
+    def test_the_reference_is_written_beside_the_reports(self, sandbox):
+        import congen.tools.validate.checks  # noqa: F401
+        from congen.tools.validate.reports import write_checks_reference
+        from congen.tools.validate.registry import registry
+
+        assert write_checks_reference(sandbox, registry.all).changed
+        assert (sandbox.root / "CHECKS.md").exists()
