@@ -18,6 +18,12 @@ from typing import Any
 ACCESSION_RE = re.compile(r"^GC[AF]_\d{9}\.\d+$")
 BIOSAMPLE_RE = re.compile(r"^SAM(N|EA|D)\d+$")
 RUN_RE = re.compile(r"^[SED]RR\d+$")
+#: SRA *experiment* accessions. The tooling resolves these, but one
+#: experiment can expand to several runs, so they are less precise than a
+#: run accession rather than invalid.
+EXPERIMENT_RE = re.compile(r"^[SED]RX\d+$")
+#: Either form.
+SRA_ACCESSION_RE = re.compile(r"^[SED]R[RX]\d+$")
 
 #: Input types snpArcher understands.
 INPUT_TYPES = frozenset({"srr", "fastq", "bam"})
@@ -50,6 +56,14 @@ class SampleRow:
     @property
     def is_run_accession(self) -> bool:
         return bool(RUN_RE.match(self.input))
+
+    @property
+    def is_experiment_accession(self) -> bool:
+        return bool(EXPERIMENT_RE.match(self.input))
+
+    @property
+    def is_sra_accession(self) -> bool:
+        return bool(SRA_ACCESSION_RE.match(self.input))
 
     @property
     def is_local_path(self) -> bool:

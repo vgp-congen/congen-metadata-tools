@@ -1,0 +1,19 @@
+{
+ "reports": [
+  {
+   "accession": "GCF_001447265.1",
+   "organism": {
+    "organism_name": "Sturnus vulgaris",
+    "tax_id": 9172
+   },
+   "assembly_info": {
+    "assembly_name": "Sturnus_vulgaris-1.0",
+    "assembly_level": "Scaffold",
+    "paired_assembly": {
+     "accession": "GCA_001447265.1",
+     "status": "current"
+    }
+   }
+  }
+ ]
+}

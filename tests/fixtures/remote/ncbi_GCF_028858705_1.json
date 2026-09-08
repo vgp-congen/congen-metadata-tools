@@ -1,0 +1,22 @@
+{
+ "reports": [
+  {
+   "accession": "GCF_028858705.1",
+   "organism": {
+    "organism_name": "Grus americana",
+    "tax_id": 9117
+   },
+   "assembly_info": {
+    "assembly_name": "bGruAme1.mat",
+    "assembly_level": "Chromosome",
+    "paired_assembly": {
+     "accession": "GCA_028858705.1",
+     "status": "current",
+     "only_refseq": "chromosome MT",
+     "refseq_genbank_are_different": true,
+     "differences": "Added chromosome MT"
+    }
+   }
+  }
+ ]
+}

@@ -47,16 +47,28 @@ def _detect_terminator(text: str) -> str:
 
 
 def load_sample_sheet(path: Path) -> SampleSheet:
-    """Load ``sample_sheet.csv``.
+    """Load ``sample_sheet.csv`` from disk."""
+    text, issue = _read_text(path)
+    if text is None:
+        return SampleSheet(path=path, columns=[], rows=[], issues=[issue] if issue else [])
+    return parse_sample_sheet(text, path)
+
+
+def parse_sample_sheet_bytes(body: bytes, path: Path) -> SampleSheet:
+    """Parse sample-sheet bytes, e.g. the copy published on GenomeArk.
+
+    ``path`` is only used to label issues, so it can name a remote object.
+    """
+    return parse_sample_sheet(body.decode("utf-8-sig", "replace"), path)
+
+
+def parse_sample_sheet(text: str, path: Path) -> SampleSheet:
+    """Parse sample-sheet text.
 
     Blank rows are skipped rather than treated as samples, and unknown
     extra columns are preserved in ``SampleRow.extra`` so a writer can
     round-trip them.
     """
-    text, issue = _read_text(path)
-    if text is None:
-        return SampleSheet(path=path, columns=[], rows=[], issues=[issue] if issue else [])
-
     terminator = _detect_terminator(text)
     reader = csv.reader(io.StringIO(text.replace("\r\n", "\n")))
     issues: list[LoadIssue] = []

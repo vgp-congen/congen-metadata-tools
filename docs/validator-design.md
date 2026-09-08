@@ -306,14 +306,22 @@ Stable IDs so findings can be referenced and suppressed in CI.
 | `R010` | error | sheet parses; required columns `sample_id,input_type,input` present |
 | `R011` | error | no empty or whitespace-only `sample_id` |
 | `R012` | error | `input_type` in `{srr, fastq, bam}` |
-| `R013` | error | for `input_type: srr`, `input` matches `[SED]RR[0-9]+` |
+| `R013` | error | for `input_type: srr`, `input` is an SRA run or experiment accession |
 | `R014` | error | duplicate `(sample_id, input)` pairs — a genuinely repeated run |
 | `R015` | warn | `input` is a local filesystem path — not reproducible |
 | `R016` | warn | `sample_id` is not a BioSample accession (`SAMN`/`SAMEA`/`SAMD`) |
+| `R017` | warn | an `srr` input names an SRA *experiment* (`SRX`/`ERX`/`DRX`) rather than a run |
 | `R020` | warn | `README.txt` accession matches `reference.source` |
 | `R021` | info | `README.txt` missing |
 
 `R014` is scoped to *pairs*: a repeated `sample_id` alone is expected.
+
+**`R013` accepts experiment accessions, and `R017` is why.** An earlier draft
+required `[SED]RR[0-9]+`, which fired on 42 rows in `birds/anser-anser` — the one
+species whose sheet uses `SRX`/`ERX`. Those are SRA *experiment* accessions; the
+download tooling resolves them, so they are not invalid. But an experiment can
+contain more than one run, so an `SRX` does not pin down which reads were used.
+Hence `R013` accepts either form and `R017` warns about the imprecision.
 
 #### Tier 1 — completeness on GenomeArk
 
@@ -323,7 +331,7 @@ Stable IDs so findings can be referenced and suppressed in CI.
 | `G002` | warn | S3 data found only under the GCA/GCF counterpart of the config accession |
 | `G003` | warn | no data on S3 for this species |
 | `G010` | error | `vcfs/raw.vcf.gz` present |
-| `G011` | error | `vcfs/raw.vcf.gz.tbi` present and not older than the VCF |
+| `G011` | error | `vcfs/raw.vcf.gz.tbi` present |
 | `G012` | error | `bams/` non-empty |
 | `G013` | error | every `bams/*.bam` has a matching `.csi` |
 | `G014` | error | no zero-byte objects |
@@ -344,6 +352,13 @@ is a default GATK output that some snpArcher versions omitted, so its presence
 says nothing about the config or the run's validity. It is deliberately *not*
 correlated with `modules.postprocess.enabled`. A future filtering pipeline will
 own this file; until then the validator only inventories it.
+
+**`G011` checks presence only.** An earlier draft also required the index to be
+no older than the VCF. That cannot work: S3 `LastModified` records upload order,
+not generation order, and `birds/hirundo-rustica`'s index is stamped one second
+before its VCF purely because that is the order they were pushed. The comparison
+was removed rather than given a fudge factor — it cannot distinguish a stale
+index from a normal upload.
 
 **`G020` and `G021` split the old single orphan check**, because the VGP list now
 distinguishes the two cases. An S3 accession in the VGP list with no repo
@@ -531,11 +546,25 @@ itself needs its own design pass.
 
 **Three decisions this tool forces, worth settling before it is built:**
 
-1. **`README.md` alongside or instead of `README.txt`?** 57 species have a
-   `README.txt` today, and the validator's `R020`/`R021` and `E002`/`E003` read
-   it. If `README.md` supersedes it, those checks must follow, and the `.txt`
-   files should be removed in the same change rather than left to rot as a second
-   stale source of truth.
+1. **Additional to `README.txt`, not a replacement — settled.** The baseline
+   `README.txt` stays, and stays authoritative; the generated document is a
+   richer sibling. So the validator's `R020`/`R021` and `E002`/`E003` keep
+   reading `README.txt` unchanged, and there is no migration to sequence.
+
+   The generated file's **name is not settled**, and may deliberately avoid
+   `README.md` to prevent confusion. Two consequences for the implementation:
+   the name lives in exactly one constant (`congen.tools.readme.OUTPUT_NAME`)
+   with a CLI override, so changing it later is a one-line edit; and
+   `core.metadata` keeps only the `README.txt` constant, since core has no
+   business knowing about a tool's output.
+
+   One concrete argument against `README.md` specifically: GitHub prefers
+   `README.md` over `README.txt` when both are present, so adding it would hide
+   the baseline file from every directory listing in the web UI. If `README.txt`
+   is to remain the primary document, the generated one wants a different name —
+   `DATASET.md` reads as a sibling with its own purpose rather than a competing
+   readme. If the intent is the opposite, that the rich document should be what
+   people see first, `README.md` gets that for free.
 2. **Fully generated, or generated sections inside a hand-written file?** If any
    species will ever carry hand-written prose, use explicit managed-block markers
    (`<!-- congen:begin stats -->` … `<!-- congen:end stats -->`) and only ever
@@ -547,18 +576,20 @@ itself needs its own design pass.
 
 ## Milestones
 
-1. **`core.http`, `core.remote.headers`, `core.metadata` loaders + `vgp.py`,
-   `core.metadata.writers`, fixtures.** The risky primitives, proven in
+1. **Done.** `core.http`, `core.remote.headers`, `core.metadata` loaders +
+   `vgp.py`, `core.metadata.writers`, fixtures. The risky primitives, proven in
    isolation. `writers.py` is here rather than later because `readme` is next and
    needs it. Record fixtures from `podarcis-raffonei` (clean), `anser-albifrons`
    (sample mismatch), `sturnus-vulgaris` (wrong reference, weird config),
    `grus-americana` (non-canonical accession, no VCF).
-2. **`findings.py` + registry + `report/`, then validate tiers 0–2 and 3b.**
+2. **Done.** `findings.py` + registry + `report/`, `core.remote.genomeark`,
+   `core.remote.ncbi`, the `congen` dispatcher, and validate tiers 0–2 and 3b.
    Tier 3b is pulled forward because it needs only the VGP CSV and one cached API
    call, and it already catches two real errors. Reproduces the baseline below.
 3. **Tier 3a** with the NCBI assembly-report cache and the internal-consistency
    fallback.
-4. **Tier 4, batch mode, orphan detection (`G020`/`G021`), CI workflow.**
+4. **Tier 4 and the CI workflow.** Batch mode and orphan detection
+   (`G020`/`G021`) landed in milestone 2 rather than here.
 5. **Tier 5** behind `--check-sra`, and `core.remote.qc` in support of `readme`.
 
 Regression-test milestone 2 against the baseline: the counts below are the
@@ -566,29 +597,41 @@ expected output, and any change to them should be explained.
 
 ## Baseline — findings as of 2026-09-08
 
-Measured by prototype across all 79 species.
+Produced by `congen validate --all` over all 79 species: **7 errors across 5
+species**, 18 warnings, 92 informational. A full-corpus run takes ~16s at 8-way
+concurrency with a warm cache. These counts are the regression target; any change
+to them should be explained.
 
 | Species | Finding |
 |---|---|
-| `birds/sturnus-vulgaris` | **`F020`** — config declares `GCF_001447265.1`; the VGP main-haplotype assembly is `GCA_052056855.1`. Not a GCA/GCF variant — a different assembly entirely. Also `G003` (no data published yet), so nothing has been run against the wrong reference. This was an open question in the previous draft; the VGP list answers it. |
-| `birds/grus-americana` | **`F021`** — config declares `GCF_028858705.1`; VGP and S3 both use `GCA_028858705.1`, so the config is the non-canonical form. Also `G002` (data found under the counterpart accession) and `G010` (BAMs uploaded, no VCF). |
-| `birds/anser-albifrons` | `S001`/`S002` — `SAMEA112262514` is in the BAMs and VCF but absent from the sheet. The row was evidently dropped after the run; the S3 copy of the sheet is identically wrong, so the VCF is the only witness. Direction of the fix needs human review. |
-| `mammals/panthera-onca` | `G010` — `GCA_046562875.2` has BAMs but no VCF. |
-| — | `G020` — `GCA_028023285.1` (*Balaenoptera ricei*) is on S3 and in the VGP list, but has no repo species directory. |
+| `birds/sturnus-vulgaris` | **`F020`** — config declares `GCF_001447265.1` (`Sturnus_vulgaris-1.0`, Scaffold); the VGP main-haplotype assembly is `GCA_052056855.1`. Not a GCA/GCF variant — a different, older, scaffold-level assembly. Also `G003` (no data published), so nothing has been run against it, and `R003` (an accession in `reference.name`). |
+| `birds/grus-americana` | **`F021`** — config declares `GCF_028858705.1`; VGP and GenomeArk both use `GCA_028858705.1`, confirmed by NCBI `paired_assembly` as the same assembly. Also `G002` (data found under the counterpart), `G010` (BAMs but no VCF), `G015`, and **`S002`** — the sheet lists 57 samples but only 42 BAMs are published, consistent with the part-way upload. |
+| `birds/anser-albifrons` | **`S001`**/**`S002`** — `SAMEA112262514` is in the BAMs and the VCF but absent from the sheet. The published copy of the sheet is identically wrong, so the VCF is the only witness. Neither finding asserts a direction; which side is stale needs a human. |
+| `mammals/panthera-onca` | **`G010`** — `GCA_046562875.2` has BAMs but no VCF. |
+| `birds/anser-anser` | `R017` — 42 inputs across 20 samples are SRA experiment accessions rather than run accessions. The only species in the corpus using `SRX`/`ERX`. |
+| `reptiles/shinisaurus-crocodilurus` | `R015` (one input is a local scratch fastq path) and `S006` (the published sheet differs from the repo copy — same samples, different rows). |
+| `birds/hirundo-rustica` | Clean. Listed only because its index/VCF upload order is what retired the `G011` timestamp comparison. |
+| — | `G020` — `GCA_028023285.1` (*Balaenoptera ricei*) is published and in the VGP list, but has no species directory. |
 | 10 species | `G003` — no data published yet: `notamacropus-eugenii`, `macrotis-lagotis`, `taeniopygia-guttata`, `arvicola-amphibius`, `caprimulgus-europaeus`, `haliaeetus-albicilla`, `myotis-nattereri`, `coregonus-lavaretus`, `astatotilapia-calliptera`, `sturnus-vulgaris`. |
-| 13 species | `G016` — `filtered.vcf.gz` present. Informational only. |
+| 69 species | `G016` — `filtered.vcf.gz` present or absent. Informational only. |
+| 22 species | `R021` — no `README.txt`. |
 | 77 species | Clean on canonicality — `reference.source` is exactly the VGP main-haplotype accession. |
-| 66 species | Clean on sample identity — sheet, BAMs, and VCF agree exactly. |
-| 67 species | Clean on reference identity — every VCF contig set exactly equals its assembly's sequence set, with matching lengths and consistent GenBank naming. |
+| 66 species | Clean on sample identity. |
+| 67 species | Clean on reference identity (measured by prototype; tier 3a lands in milestone 3). |
 
 Corpus coverage: the VGP list holds 124 species, the repo 79, so 47 listed
 species have no repo directory yet. That is expected backlog, not a finding —
-`G020` fires only where data exists on S3 without repo metadata.
+`G020` fires only where data exists on GenomeArk without repo metadata.
+
+Three of these were missed by the original prototype and only appeared once the
+real check catalog ran: `S002` on `grus-americana`, `R017` on `anser-anser`, and
+`S006` on `shinisaurus-crocodilurus`.
 
 ## Open questions
 
-- **`README.md` vs `README.txt`** — decision 1 in Part 3. It changes four
-  validator checks, so worth settling before milestone 2 rather than after.
+- **What to call the generated document.** Settled that it is additional to
+  `README.txt`; the name is not. See decision 1 in Part 3 — it is one constant,
+  so it need not block anything.
 - **What is the citable reference for a dataset?** The bioproject, the assembly
   paper, the paper that generated the reads, or all three. Shapes
   `remote/literature.py` and whether it needs Europe PMC at all.

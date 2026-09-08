@@ -1,0 +1,20 @@
+{
+ "reports": [
+  {
+   "accession": "GCA_027172205.1",
+   "organism": {
+    "organism_name": "Podarcis raffonei",
+    "tax_id": 65483
+   },
+   "assembly_info": {
+    "assembly_name": "rPodRaf1.pri",
+    "assembly_level": "Chromosome",
+    "paired_assembly": {
+     "accession": "GCF_027172205.1",
+     "status": "current",
+     "annotation_name": "GCF_027172205.1-RS_2023_02"
+    }
+   }
+  }
+ ]
+}

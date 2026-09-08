@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,10 +73,19 @@ class Cache:
         path = self._path(namespace, key)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"stored_at": time.time(), "key": key, "value": value}
-        # Write-then-rename so a concurrent reader never sees a partial file.
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload), "utf-8")
-        os.replace(tmp, path)
+        # Write-then-rename so a concurrent reader never sees a partial
+        # file. The temporary name must be unique per writer: validate
+        # runs species in parallel and they hit the same keys (the
+        # accession listing, most obviously), so a shared ".tmp" name
+        # meant one writer renamed the other's file out from under it.
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.stem}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
 
     def memoize(
         self,

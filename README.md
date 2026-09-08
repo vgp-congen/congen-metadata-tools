@@ -9,18 +9,35 @@ and the design of the first two tools.
 
 ## Status
 
-Milestone 1 (shared core) is in place:
+Milestones 1 and 2 are in place. `congen validate` runs tiers 0-2 and 3b over one
+species or the whole corpus.
 
 | Module | What it does |
 |---|---|
 | `congen.core.http` | ranged GET with retry/backoff |
 | `congen.core.cache` | ETag-aware JSON disk cache |
-| `congen.core.remote.headers` | VCF/BAM headers over HTTP Range, no htslib |
+| `congen.core.findings` | severities, findings, the check registry |
+| `congen.core.report` | human / JSON / GitHub-annotation renderers |
 | `congen.core.metadata` | tolerant loaders, models, species discovery, VGP list |
 | `congen.core.metadata.writers` | round-trip YAML, managed blocks, atomic writes |
+| `congen.core.remote.headers` | VCF/BAM headers over HTTP Range, no htslib |
+| `congen.core.remote.genomeark` | anonymous S3 listing, zarr-aware |
+| `congen.core.remote.ncbi` | NCBI Datasets assembly metadata |
+| `congen.tools.validate` | 32 checks across tiers 0, 1, 2 and 3b |
 
-Not yet built: the `congen` CLI, the findings framework, and the `validate`
-and `readme` tools themselves.
+Not yet built: tier 3a (contig-level reference identity), tier 4 (config vs
+recorded GATK provenance), tier 5 (SRA cross-checks), and the `readme` tool.
+
+## Usage
+
+```bash
+congen validate reptiles/podarcis-raffonei   # one species
+congen validate --all                        # the whole corpus, ~16s
+congen validate --list-checks                # the catalog
+congen validate --all --json report.json --strict
+```
+
+Exit codes: `0` clean or warnings only, `1` any error, `2` misuse.
 
 ## Install
 
