@@ -92,11 +92,18 @@ def reference_uses_canonical_accession(context: Context) -> list[Finding]:
 @check(
     id="F022",
     tier="F",
-    severity=Severity.WARN,
+    severity=Severity.ERROR,
     summary="the species is in the VGP reference list",
     needs=(VGP,),
 )
 def species_is_in_the_vgp_list(context: Context) -> list[Finding]:
+    """Every congen species is by definition a VGP species.
+
+    An error rather than a warning, even though it fires on nothing
+    today: all 79 species resolve. If it ever fires, either the list is
+    stale or the species does not belong in the corpus, and both want
+    attention rather than a line in the warnings.
+    """
     if context.vgp_entry:
         return []
     assert context.vgp_list
@@ -106,7 +113,7 @@ def species_is_in_the_vgp_list(context: Context) -> list[Finding]:
         return [
             Finding(
                 id="F022",
-                severity=Severity.WARN,
+                severity=Severity.ERROR,
                 subject=context.subject,
                 message=f"{context.species.slug} matches {len(candidates)} VGP entries",
                 detail=names,
@@ -115,7 +122,7 @@ def species_is_in_the_vgp_list(context: Context) -> list[Finding]:
     return [
         Finding(
             id="F022",
-            severity=Severity.WARN,
+            severity=Severity.ERROR,
             subject=context.subject,
             message=f"{context.species.slug} has no entry in the VGP reference list",
         )

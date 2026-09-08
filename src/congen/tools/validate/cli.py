@@ -11,7 +11,11 @@ from congen.core.cache import Cache
 from congen.core.findings import Severity
 from congen.core.metadata.discovery import MetadataRootNotFound, SpeciesRepo
 from congen.core.report import render_github, render_human, render_json
-from congen.tools.validate.context import DEFAULT_BAM_SAMPLE, ContextGatherer
+from congen.tools.validate.context import (
+    DEFAULT_BAM_SAMPLE,
+    DEFAULT_MISSING_THRESHOLD,
+    ContextGatherer,
+)
 from congen.tools.validate.registry import registry
 from congen.tools.validate.runner import (
     DEFAULT_WORKERS,
@@ -54,6 +58,13 @@ def _split(values: tuple[str, ...]) -> list[str] | None:
     show_default=True,
     help="How many BAM headers to read per species.",
 )
+@click.option(
+    "--missing-contig-threshold",
+    type=float,
+    default=DEFAULT_MISSING_THRESHOLD,
+    show_default=True,
+    help="Percent of assembly bases that may be absent from a VCF before F009 warns.",
+)
 @click.option("--workers", type=int, default=DEFAULT_WORKERS, show_default=True)
 @click.option("--no-cache", is_flag=True, help="Bypass the on-disk cache.")
 @click.option("--list-checks", is_flag=True, help="Print the check catalog and exit.")
@@ -71,6 +82,7 @@ def validate(
     quiet: bool,
     all_bams: bool,
     bam_sample: int,
+    missing_contig_threshold: float,
     workers: int,
     no_cache: bool,
     list_checks: bool,
@@ -105,6 +117,7 @@ def validate(
         cache=Cache(enabled=not no_cache),
         bam_sample=bam_sample,
         all_bams=all_bams,
+        missing_contig_threshold=missing_contig_threshold,
     )
     options = RunOptions(only=_split(only), skip=_split(skip), workers=workers)
     if not selected_checks(options):

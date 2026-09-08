@@ -1,0 +1,62 @@
+# Assembly name:  rPodRaf1.pri
+# Organism name:  Podarcis raffonei (Aeolian wall lizard)
+# Infraspecific name:  ecotype=La Canna islet
+# Isolate:  rPodRaf1
+# Sex:  female
+# Taxid:          65483
+# BioSample:      SAMN28455423
+# BioProject:     PRJNA839511
+# Submitter:      Vertebrate Genomes Project
+# Date:           2022-12-27
+# Assembly type:  haploid (principal pseudohaplotype of diploid)
+# Release type:   major
+# Assembly level: Chromosome
+# Genome representation: full
+# WGS project:    JAPYJY01
+# Assembly method: HiFiasm v. 0.16.1-r375; purge_dups v. 1.2.5; Bionano solve v. 3.6.1; Salsa v. 2.3
+# Expected final version: No
+# Genome coverage: 31.05x
+# Sequencing technology: PacBio Sequel II HiFi; Bionano DLS; Arima Hi-C v2
+# RefSeq category: Reference Genome
+# GenBank assembly accession: GCA_027172205.1
+# RefSeq assembly accession: GCF_027172205.1
+# RefSeq assembly and GenBank assemblies identical: yes
+# Linked assembly: GCA_027172095.1 (alternate pseudohaplotype of diploid)
+#
+## Assembly-Units:
+## GenBank Unit Accession	RefSeq Unit Accession	Assembly-Unit name
+## GCA_027172255.1	GCF_027172255.1	Primary Assembly
+#
+# Ordered by chromosome/plasmid; the chromosomes/plasmids are followed by
+# unlocalized scaffolds.
+# Unplaced scaffolds are listed at the end.
+# RefSeq is equal or derived from GenBank object.
+#
+# Sequence-Name	Sequence-Role	Assigned-Molecule	Assigned-Molecule-Location/Type	GenBank-Accn	Relationship	RefSeq-Accn	Assembly-Unit	Sequence-Length	UCSC-style-name
+SUPER_1	assembled-molecule	1	Chromosome	CM049750.1	=	NC_070602.1	Primary Assembly	139138986	na
+SUPER_2	assembled-molecule	2	Chromosome	CM049751.1	=	NC_070603.1	Primary Assembly	127263675	na
+SUPER_3	assembled-molecule	3	Chromosome	CM049752.1	=	NC_070604.1	Primary Assembly	124660641	na
+SUPER_4	assembled-molecule	4	Chromosome	CM049753.1	=	NC_070605.1	Primary Assembly	108497525	na
+SUPER_5	assembled-molecule	5	Chromosome	CM049754.1	=	NC_070606.1	Primary Assembly	102317954	na
+SUPER_6	assembled-molecule	6	Chromosome	CM049755.1	=	NC_070607.1	Primary Assembly	100096178	na
+SUPER_7	assembled-molecule	7	Chromosome	CM049756.1	=	NC_070608.1	Primary Assembly	92543381	na
+SUPER_8	assembled-molecule	8	Chromosome	CM049757.1	=	NC_070609.1	Primary Assembly	93623253	na
+SUPER_9	assembled-molecule	9	Chromosome	CM049758.1	=	NC_070610.1	Primary Assembly	80976960	na
+SUPER_10	assembled-molecule	10	Chromosome	CM049759.1	=	NC_070611.1	Primary Assembly	79254795	na
+SUPER_11	assembled-molecule	11	Chromosome	CM049760.1	=	NC_070612.1	Primary Assembly	66434231	na
+SUPER_12	assembled-molecule	12	Chromosome	CM049761.1	=	NC_070613.1	Primary Assembly	61439401	na
+SUPER_13	assembled-molecule	13	Chromosome	CM049762.1	=	NC_070614.1	Primary Assembly	56248303	na
+SUPER_14	assembled-molecule	14	Chromosome	CM049763.1	=	NC_070615.1	Primary Assembly	53986714	na
+SUPER_15	assembled-molecule	15	Chromosome	CM049764.1	=	NC_070616.1	Primary Assembly	45100313	na
+SUPER_16	assembled-molecule	16	Chromosome	CM049765.1	=	NC_070617.1	Primary Assembly	42970794	na
+SUPER_17	assembled-molecule	17	Chromosome	CM049766.1	=	NC_070618.1	Primary Assembly	42074563	na
+SUPER_18	assembled-molecule	18	Chromosome	CM049767.1	=	NC_070619.1	Primary Assembly	13334018	na
+SUPER_W	assembled-molecule	W	Chromosome	CM049768.1	=	NC_070620.1	Primary Assembly	31610000	na
+SUPER_Z	assembled-molecule	Z	Chromosome	CM049769.1	=	NC_070621.1	Primary Assembly	51487686	na
+scaffold_32	unplaced-scaffold	na	na	JAPYJY010000021.1	=	NW_026518833.1	Primary Assembly	37849	na
+scaffold_38	unplaced-scaffold	na	na	JAPYJY010000022.1	=	NW_026518839.1	Primary Assembly	358	na
+scaffold_33_ctg1	unplaced-scaffold	na	na	JAPYJY010000023.1	=	NW_026518834.1	Primary Assembly	10540	na
+scaffold_34_ctg1	unplaced-scaffold	na	na	JAPYJY010000024.1	=	NW_026518835.1	Primary Assembly	8553	na
+scaffold_35_ctg1	unplaced-scaffold	na	na	JAPYJY010000025.1	=	NW_026518836.1	Primary Assembly	7317	na
+scaffold_36_ctg1	unplaced-scaffold	na	na	JAPYJY010000026.1	=	NW_026518837.1	Primary Assembly	6473	na
+scaffold_37_ctg1	unplaced-scaffold	na	na	JAPYJY010000027.1	=	NW_026518838.1	Primary Assembly	1042	na

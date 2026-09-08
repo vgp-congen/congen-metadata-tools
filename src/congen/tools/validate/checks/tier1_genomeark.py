@@ -110,8 +110,10 @@ def raw_vcf_present(context: Context) -> list[Finding]:
             severity=Severity.ERROR,
             subject=context.subject,
             message=f"no vcfs/{RAW_VCF}",
+            # Say what is there, not what it means. Whether this is an
+            # upload in progress or something else is not ours to infer.
             detail=(
-                "bams are present, so the run is part-way uploaded"
+                f"{len(context.inventory.bam_objects)} BAM(s) present, no VCF"
                 if context.inventory.bam_objects
                 else "nothing in vcfs/"
             ),

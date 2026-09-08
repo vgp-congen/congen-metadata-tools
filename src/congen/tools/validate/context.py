@@ -24,7 +24,8 @@ from congen.core.metadata.models import SampleSheet, SpeciesMetadata
 from congen.core.metadata.vgp import VgpEntry, VgpReferenceList
 from congen.core.remote.genomeark import AccessionInventory, GenomeArk
 from congen.core.remote.headers import BamHeader, VcfHeader, read_bam_header, read_vcf_header
-from congen.core.remote.ncbi import AssemblyInfo, Ncbi
+from congen.core.remote.ncbi import AssemblyInfo, AssemblyReport, Ncbi
+from congen.core.remote.qc import ContigMap, parse_contig_map
 
 # Slice names. Checks reference these in `needs=(...)`.
 CONFIG = "config"
@@ -37,15 +38,23 @@ BAM_HEADERS = "bam_headers"
 QC_SAMPLES = "qc_samples"
 S3_SHEET = "s3_sheet"
 NCBI = "ncbi"
+ASSEMBLY_REPORT = "assembly_report"
+CONTIG_MAP = "contig_map"
 
 RAW_VCF = "raw.vcf.gz"
 FILTERED_VCF = "filtered.vcf.gz"
 QC_SAMPLES_FILE = "individuals.samps.txt"
+CONTIG_MAP_FILE = "contig_map.tsv"
 
 #: How many BAM headers to read when not reading all of them. One is
 #: enough for @RG checks; a few more make the "all BAMs agree" check
 #: meaningful without paying for 150 requests per species.
 DEFAULT_BAM_SAMPLE = 3
+
+#: Percentage of assembly bases that may be absent from a VCF before F009
+#: escalates from informational to a warning. Measured across the corpus,
+#: nothing is missing at all, so this is headroom rather than a filter.
+DEFAULT_MISSING_THRESHOLD = 1.0
 
 
 @dataclass
@@ -68,6 +77,11 @@ class Context:
     qc_samples: list[str] | None = None
     s3_sheet: SampleSheet | None = None
     ncbi_info: AssemblyInfo | None = None
+    assembly_report: AssemblyReport | None = None
+    contig_map: ContigMap | None = None
+
+    #: Tunable read by F009.
+    missing_contig_threshold: float = DEFAULT_MISSING_THRESHOLD
 
     available: set[str] = field(default_factory=set)
     gather_notes: list[str] = field(default_factory=list)
@@ -111,6 +125,7 @@ class ContextGatherer:
         ncbi: Ncbi | None = None,
         bam_sample: int = DEFAULT_BAM_SAMPLE,
         all_bams: bool = False,
+        missing_contig_threshold: float = DEFAULT_MISSING_THRESHOLD,
         seed: int = 0,
     ) -> None:
         self.cache = cache or Cache()
@@ -118,6 +133,7 @@ class ContextGatherer:
         self.ncbi = ncbi or Ncbi(self.cache)
         self.bam_sample = bam_sample
         self.all_bams = all_bams
+        self.missing_contig_threshold = missing_contig_threshold
         self.seed = seed
 
     def gather(
@@ -128,7 +144,11 @@ class ContextGatherer:
         vgp_list: VgpReferenceList | None = None,
     ) -> Context:
         required = set(required)
-        context = Context(species=species, vgp_list=vgp_list)
+        context = Context(
+            species=species,
+            vgp_list=vgp_list,
+            missing_contig_threshold=self.missing_contig_threshold,
+        )
 
         if species.config.data:
             context.available.add(CONFIG)
@@ -141,10 +161,19 @@ class ContextGatherer:
             context.vgp_entry = vgp_list.by_slug(species.slug)
             context.available.add(VGP)
 
-        if NCBI in required:
+        if required & {NCBI, ASSEMBLY_REPORT}:
             self._gather_ncbi(context)
+        if ASSEMBLY_REPORT in required:
+            self._gather_assembly_report(context)
 
-        needs_s3 = required & {S3, VCF_HEADER, BAM_HEADERS, QC_SAMPLES, S3_SHEET}
+        needs_s3 = required & {
+            S3,
+            VCF_HEADER,
+            BAM_HEADERS,
+            QC_SAMPLES,
+            S3_SHEET,
+            CONTIG_MAP,
+        }
         if needs_s3:
             self._gather_s3(context, required)
 
@@ -162,6 +191,34 @@ class ContextGatherer:
         if info:
             context.ncbi_info = info
             context.available.add(NCBI)
+
+    def _gather_assembly_report(self, context: Context) -> None:
+        accession = context.declared_accession
+        if not accession:
+            return
+        try:
+            report = self.ncbi.assembly_report(accession)
+        except Exception as exc:  # noqa: BLE001 - reported, not fatal
+            context.gather_notes.append(f"assembly report failed for {accession}: {exc}")
+            return
+        if report and report.sequences:
+            context.assembly_report = report
+            context.available.add(ASSEMBLY_REPORT)
+
+    def _gather_contig_map(self, context: Context) -> None:
+        assert context.inventory
+        obj = context.inventory.object("qc", CONTIG_MAP_FILE)
+        if not obj or obj.is_empty:
+            return
+        try:
+            text = http.get_text(obj.url)
+        except Exception as exc:  # noqa: BLE001
+            context.gather_notes.append(f"could not read {CONTIG_MAP_FILE}: {exc}")
+            return
+        contig_map = parse_contig_map(text)
+        if contig_map.rows:
+            context.contig_map = contig_map
+            context.available.add(CONTIG_MAP)
 
     def _resolve_accession(self, context: Context) -> str | None:
         """Find the accession the data actually sits under.
@@ -210,6 +267,8 @@ class ContextGatherer:
             self._gather_qc_samples(context)
         if S3_SHEET in required:
             self._gather_s3_sheet(context)
+        if CONTIG_MAP in required:
+            self._gather_contig_map(context)
 
     def _gather_vcf_header(self, context: Context) -> None:
         assert context.inventory

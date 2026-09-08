@@ -97,3 +97,73 @@ class TestAssemblyInfo:
             },
         )
         assert Ncbi(Cache(directory=tmp_path)).assembly_info("GCA_1.1").tax_id is None
+
+
+class TestAssemblyReportFetching:
+    """The FTP path is constructed, not scraped."""
+
+    def test_sanitizes_assembly_names_the_way_ncbi_does(self):
+        from congen.core.remote.ncbi import sanitize_assembly_name
+
+        # Verified against the real FTP directory names for the two
+        # corpus assemblies whose names need it.
+        assert sanitize_assembly_name("mEubGla1.1.hap2.+ XY") == "mEubGla1.1.hap2._XY"
+        assert sanitize_assembly_name("mPanOnc1 haplotype 2") == "mPanOnc1_haplotype_2"
+        assert sanitize_assembly_name("rPodRaf1.pri") == "rPodRaf1.pri"
+
+    def test_builds_the_sharded_ftp_path(self, offline):
+        url = offline._report_url("GCA_027172205.1", "rPodRaf1.pri")
+        assert url == (
+            "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/027/172/205/"
+            "GCA_027172205.1_rPodRaf1.pri/GCA_027172205.1_rPodRaf1.pri_assembly_report.txt"
+        )
+
+    def test_falls_back_to_the_directory_listing(self, monkeypatch, tmp_path):
+        """If the naming rule ever shifts, ask the directory."""
+        from congen.core.cache import Cache
+
+        listing = (
+            '<html><a href="GCA_027172205.1_someOtherName/">x</a></html>'
+        )
+        report_text = (REMOTE / "assembly_report_GCA_027172205_1.txt").read_text()
+        calls: list[str] = []
+
+        def fake_get_text(url: str, **kwargs) -> str:
+            calls.append(url)
+            if url.endswith("_assembly_report.txt"):
+                if "someOtherName" in url:
+                    return report_text
+                raise ncbi_module.http.HttpError(url, 404, "Not Found")
+            return listing
+
+        monkeypatch.setattr(ncbi_module.http, "get_text", fake_get_text)
+        monkeypatch.setattr(
+            ncbi_module.http,
+            "get_json",
+            lambda url, **kw: json.loads((REMOTE / "ncbi_GCA_027172205_1.json").read_text()),
+        )
+        report = Ncbi(Cache(directory=tmp_path)).assembly_report("GCA_027172205.1")
+        assert report is not None
+        assert len(report.sequences) == 27
+        assert any("someOtherName" in c for c in calls)
+
+    def test_a_missing_report_caches_the_miss(self, monkeypatch, tmp_path):
+        from congen.core.cache import Cache
+
+        calls: list[str] = []
+
+        def boom(url: str, **kwargs):
+            calls.append(url)
+            raise ncbi_module.http.HttpError(url, 404, "Not Found")
+
+        monkeypatch.setattr(ncbi_module.http, "get_text", boom)
+        monkeypatch.setattr(
+            ncbi_module.http,
+            "get_json",
+            lambda url, **kw: json.loads((REMOTE / "ncbi_GCA_027172205_1.json").read_text()),
+        )
+        client = Ncbi(Cache(directory=tmp_path))
+        assert client.assembly_report("GCA_027172205.1") is None
+        before = len(calls)
+        assert client.assembly_report("GCA_027172205.1") is None
+        assert len(calls) == before

@@ -9,8 +9,8 @@ and the design of the first two tools.
 
 ## Status
 
-Milestones 1 and 2 are in place. `congen validate` runs tiers 0-2 and 3b over one
-species or the whole corpus.
+Milestones 1-3 are in place. `congen validate` runs tiers 0, 1, 2, 3a and 3b over
+one species or the whole corpus.
 
 | Module | What it does |
 |---|---|
@@ -22,11 +22,12 @@ species or the whole corpus.
 | `congen.core.metadata.writers` | round-trip YAML, managed blocks, atomic writes |
 | `congen.core.remote.headers` | VCF/BAM headers over HTTP Range, no htslib |
 | `congen.core.remote.genomeark` | anonymous S3 listing, zarr-aware |
-| `congen.core.remote.ncbi` | NCBI Datasets assembly metadata |
-| `congen.tools.validate` | 32 checks across tiers 0, 1, 2 and 3b |
+| `congen.core.remote.ncbi` | NCBI Datasets metadata and assembly reports |
+| `congen.core.remote.qc` | snpArcher QC tables (`contig_map.tsv` so far) |
+| `congen.tools.validate` | 43 checks across tiers 0, 1, 2, 3a and 3b |
 
-Not yet built: tier 3a (contig-level reference identity), tier 4 (config vs
-recorded GATK provenance), tier 5 (SRA cross-checks), and the `readme` tool.
+Not yet built: tier 4 (config vs recorded GATK provenance), tier 5 (SRA
+cross-checks), and the `readme` tool.
 
 ## Usage
 

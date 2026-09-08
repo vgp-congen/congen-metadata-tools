@@ -406,7 +406,7 @@ things:
 | `F004` | error | BAM `@SQ` names and lengths equal the VCF contigs |
 | `F005` | error | all BAMs share an identical `@SQ` list |
 | `F006` | warn | reference basename in the BAM's `@PG bwa` command line matches `reference.name` |
-| `F007` | warn | NCBI organism name is consistent with the species directory slug |
+| `F007` | warn | NCBI organism name is consistent with the species directory slug — only when the species has no VGP entry, since `F023` and `F024` cover it otherwise |
 | `F008` | warn | `qc/contig_map.tsv` `original_contig` values agree with VCF contigs |
 | `F009` | warn / info | assembly sequences absent from the VCF — warn when missing bases exceed `--missing-contig-threshold` (default **1.0%** of assembly bases), info below |
 | `F010` | warn | `reference.source` is not an NCBI accession — reference identity only partially verified |
@@ -429,6 +429,30 @@ There are no `M5` checksum tags in the `@SQ` lines, so identity rests on
 name+length agreement rather than sequence checksums. The report should say so
 explicitly, so the guarantee isn't overread.
 
+Three things settled while building this tier:
+
+**The assembly-report path is constructed, not scraped.** The prototype found
+NCBI's FTP directory by parsing the directory listing HTML. That is unnecessary:
+the directory name is the accession plus the assembly name — already fetched with
+the dataset report — with every run of characters outside `[A-Za-z0-9._-]`
+collapsed to a single `_`. Verified against all 79 accessions; 77 need no
+sanitizing, and the rule was checked against the two that do
+(`mEubGla1.1.hap2.+ XY` → `mEubGla1.1.hap2._XY`, `mPanOnc1 haplotype 2` →
+`mPanOnc1_haplotype_2`). One request instead of two, and no HTML parsing. A
+listing scrape survives as a fallback in case the rule ever shifts.
+
+**`F009` and `F011` stay quiet when the contig set is incoherent.** Both measure
+what the assembly has that the VCF lacks, which is only meaningful once the VCF's
+own names are accounted for. Against the wrong assembly `F009` reads "100% of
+bases missing", and under mixed naming it reads whatever fraction used the other
+scheme — artifacts of what `F001` or `F003` already reported. Suppressing them
+there leaves one root cause standing instead of three findings describing it.
+
+**`F005` says how many BAMs it looked at.** Only a few BAM headers are read by
+default, so "all BAMs share one `@SQ` list" is really "the BAMs examined agree".
+The finding says `sampled` or `all` explicitly rather than letting a reader
+assume the stronger claim.
+
 #### Tier 3b — reference canonicality (is it the *right* reference?)
 
 Tier 3a proves the data is self-consistent with whatever `config.yaml` declares.
@@ -438,7 +462,7 @@ It cannot tell you the config declares the wrong assembly. The VGP list can.
 |---|---|---|
 | `F020` | error | `reference.source` is neither the VGP main-haplotype accession nor its GCA/GCF counterpart — a different assembly entirely |
 | `F021` | error | `reference.source` is the GCA/GCF counterpart of the VGP accession — same assembly, non-canonical accession form |
-| `F022` | warn | species has no entry in the VGP list |
+| `F022` | error | species has no entry in the VGP list |
 | `F023` | warn | VGP `ScientificName` inconsistent with the species directory slug and `reference.name` |
 | `F024` | warn | NCBI `tax_id` for the accession differs from the VGP `QID` (taxid) column |
 
@@ -586,8 +610,8 @@ itself needs its own design pass.
    `core.remote.ncbi`, the `congen` dispatcher, and validate tiers 0–2 and 3b.
    Tier 3b is pulled forward because it needs only the VGP CSV and one cached API
    call, and it already catches two real errors. Reproduces the baseline below.
-3. **Tier 3a** with the NCBI assembly-report cache and the internal-consistency
-   fallback.
+3. **Done.** Tier 3a, with the NCBI assembly-report cache, `core.remote.qc`
+   for `contig_map.tsv`, and the `F010` fallback for a non-NCBI reference.
 4. **Tier 4 and the CI workflow.** Batch mode and orphan detection
    (`G020`/`G021`) landed in milestone 2 rather than here.
 5. **Tier 5** behind `--check-sra`, and `core.remote.qc` in support of `readme`.
@@ -617,7 +641,7 @@ to them should be explained.
 | 22 species | `R021` — no `README.txt`. |
 | 77 species | Clean on canonicality — `reference.source` is exactly the VGP main-haplotype accession. |
 | 66 species | Clean on sample identity. |
-| 67 species | Clean on reference identity (measured by prototype; tier 3a lands in milestone 3). |
+| 67 species | Clean on reference identity — tier 3a confirms what the prototype measured: every VCF contig set exactly equals its assembly's sequence set, matching lengths, consistent GenBank naming, and BAM `@SQ` agreeing throughout. `F009` and `F011` therefore never fire, so the 1% threshold is untested by real data — the detectors are covered by negative controls in `tests/test_tier3a.py` instead. |
 
 Corpus coverage: the VGP list holds 124 species, the repo 79, so 47 listed
 species have no repo directory yet. That is expected backlog, not a finding —

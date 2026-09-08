@@ -20,8 +20,10 @@ from congen.core.remote.headers import FileByteSource, read_bam_header, read_vcf
 from congen.core.remote.ncbi import AssemblyInfo
 from congen.tools.validate import checks as _checks  # noqa: F401 - registers catalog
 from congen.tools.validate.context import (
+    ASSEMBLY_REPORT,
     BAM_HEADERS,
     CONFIG,
+    CONTIG_MAP,
     NCBI,
     QC_SAMPLES,
     README,
@@ -46,6 +48,8 @@ ALL_SLICES = {
     QC_SAMPLES,
     S3_SHEET,
     NCBI,
+    ASSEMBLY_REPORT,
+    CONTIG_MAP,
 }
 
 
@@ -228,7 +232,8 @@ class TestTier1:
         )
         findings = run(context, "G010")
         assert ids_and_severities(findings) == [("G010", Severity.ERROR)]
-        assert "part-way uploaded" in findings[0].detail
+        # Facts only: no inference about why the VCF is absent.
+        assert findings[0].detail == "1 BAM(s) present, no VCF"
 
     def test_accession_flip_warns_and_points_at_f021(self, repo):
         context = build(
@@ -435,7 +440,7 @@ class TestTier3bCanonicality:
         context.vgp_entry = None
         context.species.slug = "nonexistent-species"
         findings = run(context, "F022")
-        assert ids_and_severities(findings) == [("F022", Severity.WARN)]
+        assert ids_and_severities(findings) == [("F022", Severity.ERROR)]
         assert "no entry" in findings[0].message
 
     def test_taxid_disagreement_warns(self, repo):
