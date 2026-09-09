@@ -10,6 +10,11 @@ Across the corpus these agree everywhere — all 67 published VCFs record
 GATK 4.6.2.0 with `--sample-ploidy 2` and `--heterozygosity 0.005`,
 matching every config. The detectors are therefore covered by tests
 rather than by real findings.
+
+`P010` used to record the pipeline versions here. It was withdrawn: a
+validation finding has to name something that can be *fixed*, and a
+version stamp is inventory with no remedy. That belongs to the readme
+generator, which is where it came from.
 """
 
 from __future__ import annotations
@@ -162,34 +167,5 @@ def caller_matches_the_run(context: Context) -> list[Finding]:
             ),
             detail=f"recorded invocations: {', '.join(context.vcf_header.gatk_tool_ids()) or 'none'}",
             location=Location(context.config.path),
-        )
-    ]
-
-
-@check(
-    id="P010",
-    tier="P",
-    severity=Severity.INFO,
-    summary="records the pipeline versions the VCF header stamps",
-    needs=(VCF_HEADER,),
-)
-def pipeline_versions(context: Context) -> list[Finding]:
-    """Inventory, not judgement.
-
-    There is nothing in `config.yaml` to compare a tool version against,
-    but the corpus being on one GATK version is worth being able to see —
-    and it is the first thing to look at when results shift between runs.
-    """
-    assert context.vcf_header
-    versions = context.vcf_header.tool_versions()
-    if not versions:
-        return []
-    described = ", ".join(f"{name} {version}" for name, version in sorted(versions.items()))
-    return [
-        Finding(
-            id="P010",
-            severity=Severity.INFO,
-            subject=context.subject,
-            message=f"pipeline versions: {described}",
         )
     ]

@@ -65,6 +65,18 @@ class UploadStatus:
     def has(self, artifact: str) -> bool:
         return artifact in self.present
 
+    @property
+    def missing_optional(self) -> tuple[str, ...]:
+        """Optional artifacts absent for this species.
+
+        Optional means it does not affect `state`, not that nobody cares:
+        each one can be supplied, so the reports name which species are
+        missing which rather than only counting them.
+        """
+        if self.state is PublicationState.ABSENT:
+            return ()  # nothing published, so nothing is meaningfully missing
+        return tuple(a for a in OPTIONAL_ARTIFACTS if a not in self.present)
+
     def as_dict(self) -> dict:
         return {
             "subject": self.subject,
@@ -74,6 +86,7 @@ class UploadStatus:
             "accession_differs": self.accession_differs,
             "present": sorted(self.present),
             "missing": list(self.missing),
+            "missing_optional": list(self.missing_optional),
             "counts": {
                 "sheet_samples": self.n_sheet_samples,
                 "bams": self.n_bams,

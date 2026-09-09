@@ -110,11 +110,15 @@ class TestTheCorpusCase:
         """What all 67 published VCFs look like."""
         assert fire(make_context(repo, podarcis_vcf), "P001", "P002", "P003") == []
 
-    def test_versions_are_recorded_as_info(self, repo, podarcis_vcf):
-        findings = registry.run(make_context(repo, podarcis_vcf), [registry.get("P010")])
-        assert [(f.id, f.severity) for f in findings] == [("P010", Severity.INFO)]
-        assert "gatk 4.6.2.0" in findings[0].message
-        assert "bcftools 1.23.1" in findings[0].message
+    def test_p010_is_retired(self, repo, podarcis_vcf):
+        """A version stamp is inventory: there is no action that clears it.
+
+        The header accessor stays, because the readme generator wants it;
+        what went is the pretence that it was a validation finding.
+        """
+        assert "P010" not in registry
+        assert "P010" in registry.retired
+        assert podarcis_vcf.tool_versions() == {"gatk": "4.6.2.0", "bcftools": "1.23.1"}
 
 
 class TestPloidy:
@@ -210,16 +214,3 @@ class TestCaller:
             repo, podarcis_vcf, config_overrides={"variant_calling.tool": "  GATK  "}
         )
         assert fire(context, "P003") == []
-
-
-class TestVersions:
-    def test_a_header_with_no_versions_reports_nothing(self, repo):
-        context = make_context(repo, synthetic("##source=HaplotypeCaller"))
-        assert fire(context, "P010") == []
-
-    def test_gatk_only_header(self, repo):
-        header = synthetic(
-            '##GATKCommandLine=<ID=HaplotypeCaller,CommandLine="HaplotypeCaller x",Version="4.5.0.0">'
-        )
-        findings = registry.run(make_context(repo, header), [registry.get("P010")])
-        assert findings[0].message == "pipeline versions: gatk 4.5.0.0"

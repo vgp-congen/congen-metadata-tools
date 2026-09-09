@@ -17,7 +17,16 @@ registry = CheckRegistry()
 #:
 #: ``P004`` and ``P005`` were the postprocess drift checks, dropped once
 #: it was clear ``filtered.vcf.gz`` says nothing about the config.
-registry.retire("G002", "G003", "G015", "G016", "R021", "P004", "P005")
+#:
+#: ``F007``, ``F010`` and ``P010`` were withdrawn for a different reason:
+#: **a validation finding must name something that can be fixed.**
+#: ``P010`` stamped the pipeline versions, which is inventory with no
+#: remedy; ``F010`` said a check could not run, which is what SKIPPED
+#: already expresses; ``F007`` became reachable only alongside an ``F022``
+#: error. Inventory belongs to the readme generator, not here.
+registry.retire(
+    "G002", "G003", "G015", "G016", "R021", "P004", "P005", "F007", "F010", "P010"
+)
 
 check = registry.register
 

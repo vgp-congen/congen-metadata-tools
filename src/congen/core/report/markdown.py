@@ -73,6 +73,10 @@ def _facts(record: ValidationRecord) -> str | None:
     return " · ".join(parts) if parts else None
 
 
+def _missing_optional(record: ValidationRecord) -> list[str]:
+    return list((record.status or {}).get("missing_optional") or [])
+
+
 def _finding_lines(
     record: ValidationRecord, severity: str, *, checks_href: str | None = None
 ) -> list[str]:
@@ -118,6 +122,17 @@ def render_species_report(
             body = _finding_lines(record, severity, checks_href=checks_href)
             if body:
                 lines += ["", f"## {heading}", ""] + body
+
+    missing = _missing_optional(record)
+    if missing and record.state is not ReportState.STALE:
+        lines += [
+            "",
+            "## Optional files not present",
+            "",
+            "These do not affect the verdict, but each one can be supplied.",
+            "",
+        ]
+        lines += [f"- `{name}`" for name in missing]
 
     skipped = [f for f in record.findings if f["severity"] == "skipped"]
     lines += ["", "## What was checked", ""]
@@ -197,7 +212,15 @@ def render_corpus_report(
             lines.append(f"- **{finding['id']}** {finding['message']}")
         lines.append("")
 
-    lines += ["## Species", "", "| Species | State | Validated | Summary |", "|---|---|---|---|"]
+    lines += [
+        "## Species",
+        "",
+        "`Missing` lists optional files that are absent — they do not affect the",
+        "verdict, but each can be supplied.",
+        "",
+        "| Species | State | Validated | Summary | Missing |",
+        "|---|---|---|---|---|",
+    ]
     for path, record in sorted(records, key=lambda kv: kv[0]):
         errors = sum(1 for f in record.findings if f["severity"] == "error")
         warnings = sum(1 for f in record.findings if f["severity"] == "warn")
@@ -210,8 +233,12 @@ def render_corpus_report(
             if part
         ) or "—"
         link = f"[{record.subject}]({path}/VALIDATION.md)"
+        missing = ", ".join(
+            f"`{name}`" for name in (record.status or {}).get("missing_optional") or []
+        ) or "—"
         lines.append(
-            f"| {link} | {record.state.value} | {record.validated_at[:10]} | {summary} |"
+            f"| {link} | {record.state.value} | {record.validated_at[:10]} "
+            f"| {summary} | {missing} |"
         )
 
     lines += ["", GENERATED_NOTE, ""]

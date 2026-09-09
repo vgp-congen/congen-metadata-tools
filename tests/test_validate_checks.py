@@ -151,11 +151,11 @@ class TestTier0:
         for check_id in ("R001", "R002", "R010", "R013", "R015", "R016", "R020"):
             assert run(context, check_id) == [], check_id
 
-    def test_blank_row_is_reported_as_info(self, repo):
+    def test_a_blank_row_is_not_reported(self, repo):
+        """The loader skips trailing blank lines; that is the right answer."""
         context = build(repo, "birds/anser-albifrons")
-        findings = run(context, "R010")
-        assert ids_and_severities(findings) == [("R010", Severity.INFO)]
-        assert findings[0].location.line == 14
+        assert any(i.code == "blank_row" for i in context.sheet.issues)
+        assert run(context, "R010") == []
 
     def test_accession_in_reference_name_warns(self, repo):
         context = build(repo, "birds/sturnus-vulgaris")

@@ -26,9 +26,7 @@ from congen.tools.validate.context import (
     BAM_HEADERS,
     CONFIG,
     CONTIG_MAP,
-    NCBI,
     VCF_HEADER,
-    VGP,
     Context,
 )
 from congen.tools.validate.registry import check
@@ -301,45 +299,6 @@ def bwa_reference_matches_config(context: Context) -> list[Finding]:
 
 
 @check(
-    id="F007",
-    tier="F",
-    severity=Severity.WARN,
-    summary="the assembly's NCBI organism matches the species directory",
-    needs=(NCBI,),
-)
-def ncbi_organism_matches_directory(context: Context) -> list[Finding]:
-    """The species-name check of last resort.
-
-    When a VGP entry exists, `F023` compares against the list and `F024`
-    compares taxonomy IDs, which together cover this. This fires only
-    where there is no VGP entry, so the two do not report the same
-    problem twice.
-    """
-    if context.vgp_entry is not None:
-        return []
-    info = context.ncbi_info
-    if not info or not info.organism_name:
-        return []
-
-    from congen.core.metadata.vgp import binomial_slug, slugify
-
-    expected = {slugify(info.organism_name), binomial_slug(info.organism_name)}
-    if context.species.slug in expected:
-        return []
-    return [
-        Finding(
-            id="F007",
-            severity=Severity.WARN,
-            subject=context.subject,
-            message=(
-                f"{info.accession} is {info.organism_name!r}, but the directory is "
-                f"{context.species.slug!r}"
-            ),
-        )
-    ]
-
-
-@check(
     id="F008",
     tier="F",
     severity=Severity.WARN,
@@ -412,38 +371,6 @@ def assembly_sequences_present_in_vcf(context: Context) -> list[Finding]:
                 f"{fraction:.2f}% of assembly bases"
             ),
             detail=f"largest: {detail}",
-        )
-    ]
-
-
-@check(
-    id="F010",
-    tier="F",
-    severity=Severity.WARN,
-    summary="reference.source resolves to an NCBI accession",
-    needs=(CONFIG,),
-)
-def reference_is_resolvable(context: Context) -> list[Finding]:
-    """Without an accession, reference identity is only self-consistency.
-
-    Fires on nothing today — all 79 configs name an accession — but a URL
-    or local path is explicitly allowed by the config format, and a
-    reader should know the guarantee weakened.
-    """
-    reference = context.species.reference
-    if reference.source is None or reference.is_accession:
-        return []
-    return [
-        Finding(
-            id="F010",
-            severity=Severity.WARN,
-            subject=context.subject,
-            message=(
-                f"reference.source {reference.source!r} is not an NCBI accession, so "
-                "contig-level reference identity was not verified"
-            ),
-            detail="only internal consistency between the BAMs and the VCF was checked",
-            location=Location(context.config.path),
         )
     ]
 

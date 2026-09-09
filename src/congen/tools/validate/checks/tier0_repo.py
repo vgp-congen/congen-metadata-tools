@@ -30,8 +30,9 @@ SHEET_ISSUE_MAP = {
     "empty_sample_id": ("R011", Severity.ERROR),
     "unknown_input_type": ("R012", Severity.ERROR),
     "duplicate_run": ("R014", Severity.ERROR),
-    # A blank row is tidied away by the loader; worth mentioning, not fixing.
-    "blank_row": ("R010", Severity.INFO),
+    # `blank_row` is deliberately absent: the loader skips trailing blank
+    # lines and that is the right answer, so reporting one would be a note
+    # with nothing to act on.
 }
 
 

@@ -188,8 +188,10 @@ rather than defects.
 
 Required artifacts are `raw_vcf`, `raw_vcf_index`, `bams`, `qc` and
 `callable_sites`. `filtered_vcf`, `published_readme` and `repo_readme` are
-optional on GenomeArk today, so they are recorded and never judged, and they
-never affect `state`.
+optional on GenomeArk today, so they never affect `state`. Optional does not mean
+uninteresting: each one can be supplied, so both reports name *which* species are
+missing which rather than only counting them. Currently 56 species have no
+`filtered_vcf`, 12 no `repo_readme`, and `panthera-onca` no `published_readme`.
 
 Nothing in `core.status` carries a severity or a policy, which is what lets the
 validator, a future status report and the readme generator share it.
@@ -337,6 +339,28 @@ backoff, 67/67 succeeded.
 
 Stable IDs so findings can be referenced and suppressed in CI.
 
+**Every finding must name something that can be fixed.** A validation report
+concerns itself with inconsistency, not inventory: if there is no action that
+clears a finding, it is documentation and does not belong here — not even at
+INFO, because an INFO nobody can ever resolve is permanent noise that teaches
+readers to ignore the category.
+
+Four were withdrawn under this rule. `P010` stamped the pipeline versions, which
+have no remedy. `F010` reported that a check could not run, which is what SKIPPED
+already says. `F007` became reachable only alongside an `F022` error once that
+became an error. And `R010` no longer notes a trailing blank row, because the
+loader skipping it is the right answer rather than something to act on.
+
+Two INFO-level findings survive the rule because both *are* actionable: `R017`
+on a single-run experiment accession (replace the `SRX` with the `SRR` it
+contains, which removes any future ambiguity) and `F009` below the threshold
+(silent truncation is worth knowing about, and can be resolved by rerunning
+without filtering).
+
+Inventory has a home — the publication status block, and later the readme
+generator. The distinction is not that inventory is unimportant; it is that a
+verdict and a stock-take answer different questions.
+
 #### Tier 0 — repo self-consistency (no network)
 
 | ID | Severity | Check |
@@ -438,10 +462,8 @@ things:
 | `F004` | error | BAM `@SQ` names and lengths equal the VCF contigs |
 | `F005` | error | all BAMs share an identical `@SQ` list |
 | `F006` | warn | reference basename in the BAM's `@PG bwa` command line matches `reference.name` |
-| `F007` | warn | NCBI organism name is consistent with the species directory slug — only when the species has no VGP entry, since `F023` and `F024` cover it otherwise |
 | `F008` | warn | `qc/contig_map.tsv` `original_contig` values agree with VCF contigs |
 | `F009` | warn / info | assembly sequences absent from the VCF — warn when missing bases exceed `--missing-contig-threshold` (default **1.0%** of assembly bases), info below |
-| `F010` | warn | `reference.source` is not an NCBI accession — reference identity only partially verified |
 | `F011` | warn | a missing sequence is an `assembled-molecule` (a whole chromosome), at any fraction |
 
 `F001` and `F002` are the wrong-genome detectors: a different assembly of the
@@ -520,7 +542,6 @@ may legitimately have been edited after a run.
 | `P001` | warn | `##GATKCommandLine … --sample-ploidy` == `variant_calling.ploidy` |
 | `P002` | warn | `--heterozygosity` == `variant_calling.gatk.het_prior` |
 | `P003` | warn | caller in the header is consistent with `variant_calling.tool` |
-| `P010` | info | records the pipeline versions the header stamps (GATK, bcftools) |
 
 **Caller detection looks for `bcftools_call`, never bcftools in general.**
 snpArcher merges its per-interval VCFs with `bcftools concat`, so every
@@ -530,11 +551,8 @@ consistent with a `parabricks` config, since parabricks emits GATK-compatible
 headers, and stays silent on a header it does not recognize — absence of evidence
 is not evidence of a different caller.
 
-`P010` is inventory rather than judgement: there is nothing in `config.yaml` to
-compare a tool version against, but the corpus sitting on one GATK version is
-worth being able to see, and it is the first thing to look at when results shift
-between runs. Numbered `P010` because `P004` and `P005` were the retired
-`postprocess` drift checks and IDs are not reused.
+`P010` used to record the pipeline versions here, and was withdrawn — see the
+rule below.
 
 #### Tier 5 — external accessions (opt-in, `--check-sra`)
 

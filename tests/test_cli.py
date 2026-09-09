@@ -179,16 +179,23 @@ class TestValidateCli:
         )
         assert json.loads(target.read_text())["subjects"] == ["reptiles/podarcis-raffonei"]
 
-    def test_quiet_hides_info_findings(self, offline):
-        args = [
-            "--metadata-root",
-            str(METADATA_ROOT),
-            "birds/anser-albifrons",
-            "--only",
-            "R010",
-        ]
-        assert "R010" in CliRunner().invoke(validate, args).output
-        assert "R010" not in CliRunner().invoke(validate, [*args, "--quiet"]).output
+    def test_quiet_reaches_the_renderer(self, offline, monkeypatch):
+        """The renderer's own behaviour is covered in test_report.py.
+
+        No offline check emits INFO any more — the ones that can (R017,
+        F009) need the network — so this asserts the wiring instead.
+        """
+        seen: list[bool] = []
+
+        def spy(report, **kwargs):
+            seen.append(kwargs.get("show_info"))
+            return ""
+
+        monkeypatch.setattr("congen.tools.validate.cli.render_human", spy)
+        args = ["--metadata-root", str(METADATA_ROOT), "reptiles/podarcis-raffonei"]
+        CliRunner().invoke(validate, args)
+        CliRunner().invoke(validate, [*args, "--quiet"])
+        assert seen == [True, False]
 
 
 class TestOrphanFindings:

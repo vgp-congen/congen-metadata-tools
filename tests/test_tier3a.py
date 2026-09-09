@@ -15,7 +15,7 @@ import pytest
 from congen.core.findings import Severity
 from congen.core.metadata.discovery import SpeciesRepo
 from congen.core.remote.headers import FileByteSource, VcfHeader, read_bam_header, read_vcf_header
-from congen.core.remote.ncbi import AssemblyInfo, parse_assembly_report
+from congen.core.remote.ncbi import parse_assembly_report
 from congen.core.remote.qc import parse_contig_map
 from congen.tools.validate import checks as _checks  # noqa: F401 - registers catalog
 from congen.tools.validate.context import (
@@ -30,7 +30,7 @@ from congen.tools.validate.context import (
 from congen.tools.validate.registry import registry
 from tests.conftest import FIXTURE_WINDOW, METADATA_ROOT, REMOTE
 
-TIER_3A = ("F001", "F002", "F003", "F004", "F005", "F006", "F007", "F008", "F009", "F010", "F011")
+TIER_3A = ("F001", "F002", "F003", "F004", "F005", "F006", "F008", "F009", "F011")
 
 
 @pytest.fixture
@@ -360,34 +360,23 @@ class TestContigMap:
         assert fire(context, "F008") == [("F008", Severity.WARN)]
 
 
-class TestResolvability:
-    def test_an_accession_source_is_clean(self, repo):
-        assert fire(make_context(repo), "F010") == []
+class TestRetiredResolvabilityChecks:
+    """F007 and F010 were withdrawn: a finding must name something fixable."""
 
-    def test_a_url_source_warns_that_the_check_weakened(self, repo):
-        context = make_context(repo)
-        context.species.config.reference = replace(
-            context.species.reference, source="https://example.org/ref.fa.gz"
-        )
-        findings = fire(context, "F010")
-        assert findings == [("F010", Severity.WARN)]
+    def test_f010_is_retired_in_favour_of_skipped(self, repo):
+        """"Could not verify" is what SKIPPED already says."""
+        assert "F010" not in registry
+        assert "F010" in registry.retired
 
-    def test_f007_defers_to_the_vgp_checks_when_an_entry_exists(self, repo):
-        context = make_context(
-            repo,
-            ncbi_info=AssemblyInfo(
-                accession="GCA_027172205.1", organism_name="Completely Different", tax_id=1
-            ),
-        )
-        assert context.vgp_entry is not None
-        assert fire(context, "F007") == []
+    def test_a_non_accession_source_leaves_the_checks_skipped(self, repo, podarcis_vcf):
+        """The honest expression of "we could not check this"."""
+        context = make_context(repo, vcf=podarcis_vcf, report=None)
+        context.available = {CONFIG, VCF_HEADER}  # no assembly_report
+        for check_id in ("F001", "F002", "F003", "F009", "F011"):
+            findings = registry.run(context, [registry.get(check_id)])
+            assert [f.severity for f in findings] == [Severity.SKIPPED], check_id
+            assert "assembly_report" in findings[0].detail
 
-    def test_f007_is_the_fallback_when_there_is_no_vgp_entry(self, repo):
-        context = make_context(
-            repo,
-            ncbi_info=AssemblyInfo(
-                accession="GCA_027172205.1", organism_name="Completely Different", tax_id=1
-            ),
-        )
-        context.vgp_entry = None
-        assert fire(context, "F007") == [("F007", Severity.WARN)]
+    def test_f007_is_retired_as_redundant_with_f022(self):
+        assert "F007" not in registry
+        assert "F007" in registry.retired
