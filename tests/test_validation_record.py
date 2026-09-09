@@ -106,8 +106,26 @@ class TestDeriveState:
     def test_complete_and_clean_is_pass(self):
         assert derive_state([], self._status(PublicationState.COMPLETE)) is ReportState.PASS
 
-    def test_info_alone_is_still_a_pass(self):
-        findings = [Finding("P010", Severity.INFO, "x", "versions")]
+    def test_info_alone_is_pass_with_notes(self):
+        """"Fine, some cleanup to do" is its own state, not a plain pass."""
+        findings = [Finding("R017", Severity.INFO, "x", "experiment accessions")]
+        assert (
+            derive_state(findings, self._status(PublicationState.COMPLETE))
+            is ReportState.PASS_WITH_NOTES
+        )
+
+    def test_warnings_outrank_notes(self):
+        findings = [
+            Finding("W", Severity.WARN, "x", "w"),
+            Finding("R017", Severity.INFO, "x", "n"),
+        ]
+        assert (
+            derive_state(findings, self._status(PublicationState.COMPLETE))
+            is ReportState.PASS_WITH_WARNINGS
+        )
+
+    def test_skipped_does_not_make_notes(self):
+        findings = [Finding("S001", Severity.SKIPPED, "x", "s")]
         assert derive_state(findings, self._status(PublicationState.COMPLETE)) is ReportState.PASS
 
     def test_no_status_is_pending(self):

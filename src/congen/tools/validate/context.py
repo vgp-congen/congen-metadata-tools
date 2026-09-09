@@ -43,6 +43,9 @@ NCBI = "ncbi"
 ASSEMBLY_REPORT = "assembly_report"
 CONTIG_MAP = "contig_map"
 SRA = "sra"
+#: Publication status was determined — GenomeArk was consulted, even if
+#: nothing is published there. Distinguishes "we looked" from "we did not".
+STATUS = "status"
 
 RAW_VCF = "raw.vcf.gz"
 FILTERED_VCF = "filtered.vcf.gz"
@@ -79,6 +82,7 @@ class Context:
     bam_headers_complete: bool = False
     qc_samples: list[str] | None = None
     s3_sheet: SampleSheet | None = None
+    published_readme: str | None = None
     ncbi_info: AssemblyInfo | None = None
     assembly_report: AssemblyReport | None = None
     contig_map: ContigMap | None = None
@@ -204,6 +208,7 @@ class ContextGatherer:
         if not needs_s3:
             return context
 
+        context.available.add(STATUS)
         context.upload_status = build_upload_status(
             subject=context.subject,
             declared_accession=context.declared_accession,
@@ -254,6 +259,17 @@ class ContextGatherer:
         if report and report.sequences:
             context.assembly_report = report
             context.available.add(ASSEMBLY_REPORT)
+
+    def _gather_published_readme(self, context: Context) -> None:
+        """Always fetched when S3 was listed: it is 200 bytes and two checks want it."""
+        assert context.inventory
+        obj = context.inventory.object("README.txt")
+        if not obj or obj.is_empty:
+            return
+        try:
+            context.published_readme = http.get_text(obj.url)
+        except Exception as exc:  # noqa: BLE001
+            context.gather_notes.append(f"could not read published README.txt: {exc}")
 
     def _gather_contig_map(self, context: Context) -> None:
         assert context.inventory
@@ -319,6 +335,7 @@ class ContextGatherer:
             self._gather_s3_sheet(context)
         if CONTIG_MAP in required:
             self._gather_contig_map(context)
+        self._gather_published_readme(context)
 
     def _gather_vcf_header(self, context: Context) -> None:
         assert context.inventory

@@ -187,11 +187,15 @@ per-species line. Five checks were withdrawn into this model —
 rather than defects.
 
 Required artifacts are `raw_vcf`, `raw_vcf_index`, `bams`, `qc` and
-`callable_sites`. `filtered_vcf`, `published_readme` and `repo_readme` are
-optional on GenomeArk today, so they never affect `state`. Optional does not mean
-uninteresting: each one can be supplied, so both reports name *which* species are
-missing which rather than only counting them. Currently 56 species have no
-`filtered_vcf`, 12 no `repo_readme`, and `panthera-onca` no `published_readme`.
+`callable_sites`.
+
+Only `filtered_vcf` is *optional* in the recorded sense — absent for 56 of 69
+published species, and supplying it needs a pipeline run rather than a metadata
+edit. That is the line: an absent file whose remedy is compute is inventory, and
+belongs on the status; an absent file whose remedy is an edit or a copy is a
+finding. The READMEs moved to the second category as `G017` and `G018` once it
+was clear that eleven of the twelve "missing" ones already existed on GenomeArk
+and simply had not been copied back.
 
 Nothing in `core.status` carries a severity or a policy, which is what lets the
 validator, a future status report and the readme generator share it.
@@ -396,6 +400,8 @@ to `R017` in tier 5.
 | `G012` | error | `bams/` non-empty |
 | `G013` | error | every `bams/*.bam` has a matching `.csi` |
 | `G014` | error | no zero-byte objects in the data directories |
+| `G017` | warn | the repo and GenomeArk `README.txt` agree |
+| `G018` | warn | a `README.txt` exists on at least one side |
 | `G020` | warn | S3 accession is in the VGP list but has no repo species directory |
 | `G021` | warn | S3 accession is in neither the repo nor the VGP list — stray data |
 
@@ -415,6 +421,23 @@ not generation order, and `birds/hirundo-rustica`'s index is stamped one second
 before its VCF purely because that is the order they were pushed. The comparison
 was removed rather than given a fudge factor — it cannot distinguish a stale
 index from a normal upload.
+
+**`G017` and `G018` split what a bare "no README" note conflated.** Twelve
+species have no `README.txt` in the repo, but they are two different problems
+with two different fixes. Eleven have one on GenomeArk that was never copied
+back — a sync gap, mechanically fixable, and the structural analogue of `S006`
+for the sample sheet. One (`panthera-onca`) has none anywhere, along with ten
+species still awaiting data. `G017` alone would miss the second group entirely,
+reading "no copies" as trivially in sync.
+
+`G018` fires for unpublished species too: writing a README does not need the
+data to exist, since the contributing bioprojects come from the sample sheet, so
+waiting on a run is not a reason to be undocumented. It depends on the `status`
+slice rather than `s3`, which is what lets it speak about a species with nothing
+published while still reporting SKIPPED when GenomeArk was never consulted.
+
+Measured across the corpus: 57 in sync, 11 published-only, 0 repo-only, 0
+differing in content, 1 with none anywhere.
 
 **`G020` and `G021` split the old single orphan check**, because the VGP list now
 distinguishes the two cases. An S3 accession in the VGP list with no repo
@@ -787,6 +810,7 @@ and affordable: a full run is ~85s.
 |---|---|
 | `PASS` | validated, no errors or warnings |
 | `PASS WITH WARNINGS` | validated, warnings only |
+| `PASS WITH NOTES` | validated and clean apart from actionable tidying — "fine, some cleanup to do" |
 | `FAIL` | errors found |
 | `PENDING` | no data published yet; metadata checks pass. **Expected, not a failure** — pushing a config and sheet before the run exists is normal |
 | `STALE` | inputs changed since the last validation; the recorded verdict no longer describes the current files |

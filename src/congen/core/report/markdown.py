@@ -23,6 +23,10 @@ STATE_BLURB = {
     ReportState.PASS_WITH_WARNINGS: (
         "Metadata agrees with the data published on GenomeArk, with points to note."
     ),
+    ReportState.PASS_WITH_NOTES: (
+        "Metadata agrees with the data published on GenomeArk. There is some "
+        "tidying to do, but nothing that affects whether it can be relied on."
+    ),
     ReportState.FAIL: "Problems were found. See below before relying on this metadata.",
     ReportState.PENDING: (
         "Not yet validated against published data. This is an expected state: "
@@ -129,7 +133,8 @@ def render_species_report(
             "",
             "## Optional files not present",
             "",
-            "These do not affect the verdict, but each one can be supplied.",
+            "Recorded for information. Supplying these needs a pipeline run rather "
+            "than a metadata edit, so they are not findings.",
             "",
         ]
         lines += [f"- `{name}`" for name in missing]
@@ -180,6 +185,7 @@ STATE_ORDER = (
     ReportState.FAIL,
     ReportState.STALE,
     ReportState.PASS_WITH_WARNINGS,
+    ReportState.PASS_WITH_NOTES,
     ReportState.PENDING,
     ReportState.PASS,
 )
@@ -215,30 +221,19 @@ def render_corpus_report(
     lines += [
         "## Species",
         "",
-        "`Missing` lists optional files that are absent — they do not affect the",
-        "verdict, but each can be supplied.",
-        "",
-        "| Species | State | Validated | Summary | Missing |",
-        "|---|---|---|---|---|",
+        "| Species | State | Validated | Findings |",
+        "|---|---|---|---|",
     ]
     for path, record in sorted(records, key=lambda kv: kv[0]):
-        errors = sum(1 for f in record.findings if f["severity"] == "error")
-        warnings = sum(1 for f in record.findings if f["severity"] == "warn")
-        summary = ", ".join(
-            part
-            for part in (
-                f"{errors} error{'s' if errors != 1 else ''}" if errors else "",
-                f"{warnings} warning{'s' if warnings != 1 else ''}" if warnings else "",
-            )
-            if part
-        ) or "—"
+        counted = []
+        for severity, noun in (("error", "error"), ("warn", "warning"), ("info", "note")):
+            n = sum(1 for f in record.findings if f["severity"] == severity)
+            if n:
+                counted.append(f"{n} {noun}{'s' if n != 1 else ''}")
+        summary = ", ".join(counted) or "—"
         link = f"[{record.subject}]({path}/VALIDATION.md)"
-        missing = ", ".join(
-            f"`{name}`" for name in (record.status or {}).get("missing_optional") or []
-        ) or "—"
         lines.append(
-            f"| {link} | {record.state.value} | {record.validated_at[:10]} "
-            f"| {summary} | {missing} |"
+            f"| {link} | {record.state.value} | {record.validated_at[:10]} | {summary} |"
         )
 
     lines += ["", GENERATED_NOTE, ""]

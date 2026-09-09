@@ -19,10 +19,19 @@ from dataclasses import dataclass, field
 #: Artifacts a finished publication is expected to have.
 REQUIRED_ARTIFACTS = ("raw_vcf", "raw_vcf_index", "bams", "qc", "callable_sites")
 
-#: Artifacts that are legitimately optional on GenomeArk today. Recorded,
-#: never judged: `filtered.vcf.gz` is a default GATK output some snpArcher
-#: versions omitted, and the READMEs are not yet mandatory.
-OPTIONAL_ARTIFACTS = ("filtered_vcf", "published_readme", "repo_readme")
+#: Artifacts that are optional on GenomeArk today, recorded but never
+#: judged. Only `filtered.vcf.gz` qualifies: it is a default GATK output
+#: some snpArcher versions omitted, and supplying it needs a pipeline run
+#: rather than a metadata edit, so it is inventory rather than a task.
+#:
+#: The READMEs used to be here and are not any more. An absent README is
+#: not a bare fact — either the two copies are out of sync (`G017`) or
+#: nobody has written one (`G018`) — and both have a direct fix, so they
+#: are findings.
+OPTIONAL_ARTIFACTS = ("filtered_vcf",)
+
+#: Still recorded on the status, because the README checks read them.
+TRACKED_ARTIFACTS = ("filtered_vcf", "published_readme", "repo_readme")
 
 
 class PublicationState(enum.Enum):

@@ -14,7 +14,7 @@ something actually broken.
 from __future__ import annotations
 
 from congen.core.findings import Finding, Location, Severity
-from congen.tools.validate.context import CONFIG, RAW_VCF, S3, Context
+from congen.tools.validate.context import CONFIG, RAW_VCF, S3, STATUS, Context
 from congen.tools.validate.registry import check
 
 #: `qc/ind_filter_list.txt` is legitimately empty when no individual is
@@ -186,5 +186,99 @@ def no_empty_data_objects(context: Context) -> list[Finding]:
             subject=context.subject,
             message=f"{len(suspects)} zero-byte object(s) in the data directories",
             detail=", ".join(sorted(o.key.split("/", 4)[-1] for o in suspects)),
+        )
+    ]
+
+
+def _normalized(text: str | None) -> str | None:
+    return "\n".join(line.rstrip() for line in text.strip().splitlines()) if text else None
+
+
+@check(
+    id="G017",
+    tier="G",
+    severity=Severity.WARN,
+    summary="the repo and GenomeArk READMEs agree",
+    needs=(S3,),
+)
+def readme_is_in_sync(context: Context) -> list[Finding]:
+    """The repo copy and the published copy have drifted apart.
+
+    The structural analogue of `S006` for the sample sheet: two copies of
+    one document, and one of them is behind. Almost always a sync gap
+    rather than a disagreement — across the corpus, eleven species have a
+    README on GenomeArk that was never copied back, and none have
+    differing content — so the fix is usually mechanical.
+
+    Silent when neither side has one; that is `G018`.
+    """
+    assert context.inventory
+    published = _normalized(context.published_readme)
+    local = _normalized(context.readme.text if context.readme else None)
+
+    if published and not local:
+        return [
+            Finding(
+                id="G017",
+                severity=Severity.WARN,
+                subject=context.subject,
+                message="GenomeArk publishes a README.txt that is not in the repo",
+                detail="copy it into the species directory",
+            )
+        ]
+    if local and not published:
+        return [
+            Finding(
+                id="G017",
+                severity=Severity.WARN,
+                subject=context.subject,
+                message="the repo has a README.txt that GenomeArk does not publish",
+                detail="publish it alongside the data",
+                location=Location(context.readme.path) if context.readme else None,
+            )
+        ]
+    if published and local and published != local:
+        return [
+            Finding(
+                id="G017",
+                severity=Severity.WARN,
+                subject=context.subject,
+                message="the repo and published README.txt differ",
+                detail="reconcile the two copies",
+                location=Location(context.readme.path) if context.readme else None,
+            )
+        ]
+    return []
+
+
+@check(
+    id="G018",
+    tier="G",
+    severity=Severity.WARN,
+    summary="a README.txt exists somewhere",
+    needs=(STATUS,),
+)
+def readme_exists_somewhere(context: Context) -> list[Finding]:
+    """Nobody has documented this dataset, on either side.
+
+    The README is where the contributing bioprojects are recorded, so
+    without one there is nothing telling a user what to cite. Distinct
+    from `G017`: that one says the two copies disagree, this one says
+    there is no copy to disagree with, which `G017` would read as being
+    trivially in sync.
+
+    Fires for unpublished species too. Writing a README does not need the
+    data to exist — the bioprojects come from the sample sheet — so
+    waiting on a run is not a reason to be undocumented.
+    """
+    if context.readme is not None or context.published_readme:
+        return []
+    return [
+        Finding(
+            id="G018",
+            severity=Severity.WARN,
+            subject=context.subject,
+            message="no README.txt in the repo or on GenomeArk",
+            detail="nothing records which bioprojects this dataset draws on",
         )
     ]

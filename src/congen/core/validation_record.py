@@ -33,6 +33,8 @@ INPUT_FILES = ("config.yaml", "sample_sheet.csv", "README.txt")
 class ReportState(enum.Enum):
     PASS = "PASS"
     PASS_WITH_WARNINGS = "PASS WITH WARNINGS"
+    #: Clean apart from actionable tidying — "fine, some cleanup to do".
+    PASS_WITH_NOTES = "PASS WITH NOTES"
     FAIL = "FAIL"
     #: Cannot be validated yet: no published data, or an incomplete upload.
     #: An expected state, not a failure — metadata routinely lands first.
@@ -114,6 +116,8 @@ def derive_state(findings: Sequence[Finding], status: UploadStatus | None) -> Re
         return ReportState.PENDING
     if any(f.severity is Severity.WARN for f in findings):
         return ReportState.PASS_WITH_WARNINGS
+    if any(f.severity is Severity.INFO for f in findings):
+        return ReportState.PASS_WITH_NOTES
     return ReportState.PASS
 
 

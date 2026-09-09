@@ -27,6 +27,7 @@ from congen.tools.validate.context import (
     CONTIG_MAP,
     NCBI,
     SRA,
+    STATUS,
     QC_SAMPLES,
     README,
     S3,
@@ -53,6 +54,7 @@ ALL_SLICES = {
     ASSEMBLY_REPORT,
     CONTIG_MAP,
     SRA,
+    STATUS,
 }
 
 
@@ -709,3 +711,80 @@ class TestStatusIsOnlyClaimedWhenChecked:
         context = gatherer.gather(repo.load("reptiles/podarcis-raffonei"), {"s3"})
         assert context.upload_status is not None
         assert context.upload_status.state is PublicationState.ABSENT
+
+
+class TestReadmeChecks:
+    """G017 and G018 split what was a bare "no README" note."""
+
+    def _context(self, repo, key, *, published: str | None, available=None):
+        context = build(
+            repo,
+            key,
+            inventory=make_inventory("GCA_1.1", bams=["S1"]),
+            published_readme=published,
+            available=available if available is not None else {S3, STATUS, CONFIG},
+        )
+        return context
+
+    def test_matching_readmes_are_silent(self, repo):
+        species = repo.load("reptiles/podarcis-raffonei")
+        context = self._context(
+            repo, "reptiles/podarcis-raffonei", published=species.readme.text
+        )
+        assert run(context, "G017") == []
+        assert run(context, "G018") == []
+
+    def test_published_but_not_in_the_repo(self, repo):
+        """Eleven species today: the file exists, nobody copied it back."""
+        context = self._context(
+            repo, "birds/sturnus-vulgaris", published="Species: Sturnus vulgaris\n"
+        )
+        findings = run(context, "G017")
+        assert ids_and_severities(findings) == [("G017", Severity.WARN)]
+        assert "not in the repo" in findings[0].message
+        assert "copy it" in findings[0].detail
+
+    def test_in_the_repo_but_not_published(self, repo):
+        context = self._context(repo, "reptiles/podarcis-raffonei", published=None)
+        findings = run(context, "G017")
+        assert ids_and_severities(findings) == [("G017", Severity.WARN)]
+        assert "does not publish" in findings[0].message
+
+    def test_both_present_but_differing(self, repo):
+        context = self._context(
+            repo, "reptiles/podarcis-raffonei", published="Species: Something else\n"
+        )
+        findings = run(context, "G017")
+        assert ids_and_severities(findings) == [("G017", Severity.WARN)]
+        assert "differ" in findings[0].message
+
+    def test_trailing_whitespace_is_not_a_difference(self, repo):
+        species = repo.load("reptiles/podarcis-raffonei")
+        context = self._context(
+            repo, "reptiles/podarcis-raffonei", published=species.readme.text + "\n\n"
+        )
+        assert run(context, "G017") == []
+
+    def test_neither_side_is_g018_not_g017(self, repo):
+        """G017 would read "no copies" as trivially in sync."""
+        context = self._context(repo, "birds/sturnus-vulgaris", published=None)
+        assert run(context, "G017") == []
+        findings = run(context, "G018")
+        assert ids_and_severities(findings) == [("G018", Severity.WARN)]
+        assert "which bioprojects" in findings[0].detail
+
+    def test_g018_fires_for_an_unpublished_species(self, repo):
+        """Writing one does not need the data: the bioprojects are in the sheet."""
+        context = build(
+            repo,
+            "birds/sturnus-vulgaris",
+            resolved_accession=None,
+            available={CONFIG, STATUS},
+        )
+        assert ids_and_severities(run(context, "G018")) == [("G018", Severity.WARN)]
+
+    def test_g018_is_skipped_when_genomeark_was_not_consulted(self, repo):
+        """Otherwise it would claim "nowhere" having looked in one place."""
+        context = build(repo, "birds/sturnus-vulgaris", available={CONFIG})
+        findings = registry.run(context, [registry.get("G018")])
+        assert [f.severity for f in findings] == [Severity.SKIPPED]
