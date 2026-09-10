@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 import pytest
 from click.testing import CliRunner
@@ -153,6 +154,30 @@ class TestValidateCli:
         result = CliRunner().invoke(validate, ["--metadata-root", str(tmp_path), "--stale"])
         assert result.exit_code == 2
         assert "no species found" in result.output
+
+    @pytest.mark.parametrize("mode", ["--check-stale", "--mark-stale"])
+    def test_the_offline_modes_refuse_an_empty_root_too(self, mode, tmp_path):
+        """They report on reports, but the CI danger is identical.
+
+        `--check-stale` used to say every report described its inputs, and
+        `--mark-stale` to stamp nothing, both exiting 0 over a root holding
+        no reports at all.
+        """
+        result = CliRunner().invoke(validate, ["--metadata-root", str(tmp_path), mode])
+        assert result.exit_code == 2
+        assert "no species found" in result.output
+
+    @pytest.mark.parametrize("mode", ["--check-stale", "--mark-stale"])
+    def test_the_offline_modes_still_run_over_a_populated_root(self, mode, tmp_path):
+        """The guard must not have made the offline modes unusable.
+
+        Over a copy, because --mark-stale writes.
+        """
+        root = tmp_path / "metadata"
+        shutil.copytree(METADATA_ROOT, root)
+        result = CliRunner().invoke(validate, ["--metadata-root", str(root), mode])
+        assert result.exit_code in (0, 1)
+        assert "no species found" not in result.output
 
     def test_clean_species_exits_zero(self, offline):
         result = CliRunner().invoke(

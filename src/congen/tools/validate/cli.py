@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import click
 
@@ -45,6 +46,21 @@ def _split(values: tuple[str, ...]) -> list[str] | None:
     for value in values:
         out.extend(part.strip() for part in value.split(",") if part.strip())
     return out or None
+
+
+def _no_species(repo: SpeciesRepo, clade: str | None = None) -> NoReturn:
+    """Refuse to report on nothing.
+
+    Every mode of this command reports on species, so zero species is
+    misuse rather than a result: a CI job with a mistyped or unset
+    --metadata-root would otherwise pass while checking nothing, and with
+    --write-reports create the tree it was pointed at, which is what made
+    the mistake look like a successful run.
+    """
+    raise click.UsageError(
+        f"no species found under {repo.species_root}"
+        + (f" for clade {clade!r}" if clade else "")
+    )
 
 
 @click.command("validate")
@@ -146,6 +162,11 @@ def validate(
     except MetadataRootNotFound as exc:
         raise click.ClickException(str(exc)) from exc
 
+    # Ahead of every mode, and of the network: past here the repo is known
+    # to hold species, so nothing below can report on an empty root.
+    if not repo.species_dirs():
+        _no_species(repo)
+
     gatherer_cache = Cache(enabled=not no_cache)
     options = RunOptions(
         only=_split(only), skip=_split(skip), workers=workers, check_sra=check_sra
@@ -183,10 +204,9 @@ def validate(
         )
         species_list = [s for s, _ in pending]
         stale_reasons = {s.key: v.reason or "" for s, v in pending}
-        if not species_list and repo.species_dirs():
-            # Empty because every report is current — which is only good
-            # news if the repo holds species at all. An empty root falls
-            # through to the guard below instead of passing here.
+        if not species_list:
+            # Genuine success: the repo holds species (guarded above) and
+            # every one of their reports is current.
             click.echo("nothing to revalidate: every report is current")
             sys.exit(0)
     elif all_species:
@@ -198,15 +218,9 @@ def validate(
             raise click.ClickException(str(exc)) from exc
 
     if not species_list:
-        # Validating nothing and exiting 0 would let a CI job with a
-        # mistyped or unset --metadata-root pass vacuously. Refused here,
-        # ahead of any gathering, orphan detection or report writing:
-        # --write-reports must not create a tree under a root that holds
-        # no species, which is what made the mistake look like a run.
-        raise click.UsageError(
-            f"no species found under {repo.species_root}"
-            + (f" for clade {clade!r}" if clade else "")
-        )
+        # Reachable via --clade: the repo has species, just none in that
+        # clade. Named, so a typo is distinguishable from an empty root.
+        _no_species(repo, clade)
 
     gatherer = ContextGatherer(
         cache=gatherer_cache,
