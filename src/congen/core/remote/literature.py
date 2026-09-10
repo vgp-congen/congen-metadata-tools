@@ -32,6 +32,20 @@ SEARCH_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 
 NAMESPACE = "europepmc-accession"
 
+#: How long a search result stays cached, in seconds.
+#:
+#: Without a TTL the whole reopen mechanism is inert. A BioProject filed
+#: as `NO PUBLICATION FOUND` is re-searched by `--propose`, but a
+#: permanently cached "nothing found" answers every time, so no candidate
+#: is ever unseen and it never returns to the queue. The design promises
+#: that data published ahead of its paper comes back once the paper
+#: appears; without this it never can.
+#:
+#: A month is not a policy about when to re-ask a reviewer — that is
+#: still driven by evidence. It is only how long to trust one HTTP
+#: response about a literature database that changes daily.
+SEARCH_TTL = 30 * 24 * 60 * 60.0
+
 #: More than a handful of hits for one accession means the search matched
 #: something generic rather than a data citation, and a human reviewing
 #: the queue is better served by the top few than by forty.
@@ -177,7 +191,7 @@ class EuropePmc:
 
         Quoted, so `PRJNA1234` does not also match `PRJNA12345`.
         """
-        cached = self.cache.get(NAMESPACE, accession)
+        cached = self.cache.get(NAMESPACE, accession, ttl=SEARCH_TTL)
         if cached is not None:
             return parse_search(accession, json.dumps(cached))
         query = urllib.parse.quote(f'"{accession}"')

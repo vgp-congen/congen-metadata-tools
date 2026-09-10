@@ -592,3 +592,54 @@ class TestFilingTwice:
         merge, _ = self._filed()
         fresh = Entry(bioproject="PRJNA9", status=Status.CONFIRMED, dois=["10.z/z"])
         assert merge(None, fresh) is fresh
+
+
+class TestSearchCacheExpiry:
+    """A permanently cached search makes the reopen mechanism inert.
+
+    `NO PUBLICATION FOUND` promises the BioProject comes back when a
+    paper appears. If the search answer never expires, "nothing found"
+    is replayed forever and nothing can ever be unseen.
+    """
+
+    def test_a_search_result_is_not_cached_forever(self, tmp_path, monkeypatch):
+        import time
+
+        from congen.core.cache import Cache
+        from congen.core.remote.literature import NAMESPACE, SEARCH_TTL, EuropePmc
+
+        cache = Cache(directory=tmp_path)
+        cache.set(NAMESPACE, "PRJNA1", {"hitCount": 0, "resultList": {"result": []}})
+
+        # Pretend the entry was written just over the TTL ago.
+        stored = tmp_path / NAMESPACE
+        for path in stored.rglob("*.json"):
+            import json
+
+            payload = json.loads(path.read_text())
+            payload["stored_at"] = time.time() - SEARCH_TTL - 1
+            path.write_text(json.dumps(payload))
+
+        calls = []
+
+        def fresh(url, **kwargs):
+            calls.append(url)
+            return '{"hitCount": 1, "resultList": {"result": [{"doi": "10.new/paper"}]}}'
+
+        monkeypatch.setattr("congen.core.remote.literature.http.get_text", fresh)
+        hits = EuropePmc(cache).search_accession("PRJNA1")
+        assert calls, "an expired search must be re-asked"
+        assert hits.candidates[0].doi == "10.new/paper"
+
+    def test_a_recent_result_is_still_served_from_the_cache(self, tmp_path, monkeypatch):
+        from congen.core.cache import Cache
+        from congen.core.remote.literature import NAMESPACE, EuropePmc
+
+        cache = Cache(directory=tmp_path)
+        cache.set(NAMESPACE, "PRJNA1", {"hitCount": 0, "resultList": {"result": []}})
+
+        def refuse(url, **kwargs):
+            raise AssertionError("should not have been asked")
+
+        monkeypatch.setattr("congen.core.remote.literature.http.get_text", refuse)
+        assert not EuropePmc(cache).search_accession("PRJNA1").found
