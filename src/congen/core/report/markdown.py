@@ -200,7 +200,9 @@ def render_corpus_report(
 ) -> str:
     """The repo-root table: every species, one line each."""
     lines = ["# Validation status", ""]
-    lines.append(f"Generated `{validated_at}` by congen-metadata-tools {tool_version}.")
+    lines.append(
+        f"Most recent validation `{validated_at}` · congen-metadata-tools {tool_version}."
+    )
     lines.append("")
 
     counts = {state: 0 for state in ReportState}

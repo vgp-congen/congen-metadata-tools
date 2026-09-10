@@ -86,9 +86,17 @@ class Harvester:
     ncbi: Ncbi
     sra: Sra | None = None
     tool_version: str = ""
-    #: Collected per species and copied onto the record, so a thin record
-    #: says why it is thin instead of looking like a clean one.
+    #: Descriptive: things that are true and worth recording. "No data
+    #: published on GenomeArk" belongs here — it is a fact, not a fault.
     notes: list[str] = field(default_factory=list)
+    #: A request that should have worked and did not. Separate from
+    #: `notes` because an outage and an absence must never be confused:
+    #: unattended, a run that treats a failed fetch as "nothing there"
+    #: commits a record asserting the data has no QC tables.
+    #:
+    #: A record harvested with any failure is **not written**, so the
+    #: previous good record survives and the caller can exit non-zero.
+    failures: list[str] = field(default_factory=list)
 
     @classmethod
     def build(cls, cache: Cache | None = None, *, tool_version: str = "") -> Harvester:
@@ -102,6 +110,7 @@ class Harvester:
 
     def harvest(self, species: SpeciesMetadata) -> DatasetRecord:
         self.notes = []
+        self.failures = []
         declared = species.reference.accession
         record = DatasetRecord(
             subject=species.key,
@@ -115,7 +124,7 @@ class Harvester:
                 declared, species.reference.counterpart()
             )
         except Exception as exc:  # noqa: BLE001 - a listing failure is not fatal
-            self.notes.append(f"GenomeArk listing failed: {exc}")
+            self.failures.append(f"GenomeArk listing failed: {exc}")
             resolved = None
 
         # Before the early return: a bioproject list matters whether or
@@ -151,7 +160,7 @@ class Harvester:
         try:
             index = self.sra.lookup(accessions)
         except Exception as exc:  # noqa: BLE001 - eutils is not always up
-            self.notes.append(f"NCBI SRA lookup failed: {exc}")
+            self.failures.append(f"NCBI SRA lookup failed: {exc}")
             return
         for accession in accessions:
             runs = index.runs_for(accession)
@@ -179,7 +188,7 @@ class Harvester:
         try:
             inventory = self.genomeark.inventory(accession)
         except Exception as exc:  # noqa: BLE001
-            self.notes.append(f"GenomeArk inventory failed: {exc}")
+            self.failures.append(f"GenomeArk inventory failed: {exc}")
             return
 
         listings = [inventory.top, inventory.bams, inventory.vcfs, inventory.qc]
@@ -191,7 +200,7 @@ class Harvester:
         try:
             callable_sites = self.genomeark.list(f"{prefix}/{CALLABLE_SITES_DIR}/")
         except Exception as exc:  # noqa: BLE001
-            self.notes.append(f"callable_sites listing failed: {exc}")
+            self.failures.append(f"callable_sites listing failed: {exc}")
         else:
             listings.append(callable_sites)
             if callable_sites.subdirs:
@@ -251,7 +260,7 @@ class Harvester:
         try:
             return http.get_text(f"{BASE_URL}/{record.prefix}/{path}")
         except Exception as exc:  # noqa: BLE001
-            self.notes.append(f"{path}: fetch failed: {exc}")
+            self.failures.append(f"{path}: fetch failed: {exc}")
             return None
 
     # -- NCBI and the VCF header -------------------------------------------
@@ -260,7 +269,7 @@ class Harvester:
         try:
             info = self.ncbi.assembly_info(accession)
         except Exception as exc:  # noqa: BLE001
-            self.notes.append(f"NCBI assembly lookup failed: {exc}")
+            self.failures.append(f"NCBI assembly lookup failed: {exc}")
             return
         if info is None:
             self.notes.append(f"NCBI knows no assembly {accession}")
@@ -283,7 +292,7 @@ class Harvester:
         try:
             header = read_vcf_header(f"{BASE_URL}/{record.prefix}/{RAW_VCF}")
         except (HeaderError, OSError) as exc:
-            self.notes.append(f"{RAW_VCF}: header read failed: {exc}")
+            self.failures.append(f"{RAW_VCF}: header read failed: {exc}")
             return
         record.vcf = _asdict(
             VcfProvenance(

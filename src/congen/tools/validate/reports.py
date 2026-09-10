@@ -81,6 +81,9 @@ def checks_href(species: SpeciesMetadata, root: Path | None) -> str | None:
 def write_species_report(
     species: SpeciesMetadata, record: ValidationRecord, *, root: Path | None = None
 ) -> WriteResult:
+    # Before rendering: a verdict that has not changed keeps its original
+    # date, and the markdown prints that date too.
+    record.reconcile_with(species.path / REPORT_JSON)
     markdown = render_species_report(
         record, species_display_name(species), checks_href=checks_href(species, root)
     )
@@ -222,7 +225,11 @@ def write_corpus_report(
         for f in report.findings
         if f.subject == "<corpus>" and f.severity is not Severity.SKIPPED
     ]
-    stamp = validated_at or utc_now()
+    # Derived from the records, not the clock. The species records now
+    # keep the date their verdict was established, so the newest of them
+    # is both stable across a no-op run and more informative than "when
+    # this table was printed".
+    stamp = max((r.validated_at for _, r in records), default=None) or validated_at or utc_now()
     markdown = render_corpus_report(
         records,
         validated_at=stamp,
@@ -231,15 +238,22 @@ def write_corpus_report(
     )
     import json
 
+    # Iterate the enum, not a set of members. A set of enum members
+    # iterates in hash order, which for enums is id-based and therefore
+    # varies between processes — so this dict's key order was unstable
+    # and the file churned on runs that had changed nothing.
+    counts = {state.value: 0 for state in ReportState}
+    for _, record in records:
+        counts[record.state.value] += 1
+
     payload = {
         "validated_at": stamp,
         "tool_version": tool_version(),
-        "counts": {state.value: 0 for state in {r.state for _, r in records}},
-        "corpus_findings": corpus_findings,
-        "species": {r.subject: r.state.value for _, r in records},
+        "counts": {state: n for state, n in counts.items() if n},
+        # Concurrency decides the order findings arrive in, so sort them.
+        "corpus_findings": sorted(corpus_findings, key=lambda f: (f["id"], f["message"])),
+        "species": {r.subject: r.state.value for _, r in sorted(records, key=lambda kv: kv[0])},
     }
-    for _, record in records:
-        payload["counts"][record.state.value] += 1
 
     return WriteResult(
         subject="<corpus>",

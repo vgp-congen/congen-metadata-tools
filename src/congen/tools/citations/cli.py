@@ -307,6 +307,19 @@ def _propose(repo, index, samples, species_of, *, limit: int | None, no_cache: b
             + (f"  {hits.error}" if hits.error else "")
         )
 
+    if errors:
+        # A lookup that failed is not a lookup that found nothing. Writing
+        # the queue now would record "no candidates" for BioProjects
+        # nobody managed to search, and a reviewer would file them as
+        # NO PUBLICATION FOUND on the strength of an outage.
+        click.echo("", err=True)
+        click.echo(
+            f"{errors} lookup(s) failed, so the queue was not written. "
+            "Re-run when the service is back; cached results make it cheap.",
+            err=True,
+        )
+        sys.exit(EXIT_PROBLEM)
+
     merged, changed = merge_proposals(queued, proposals)
     (repo.root / QUEUE_FILE).parent.mkdir(parents=True, exist_ok=True)
     wrote = write_if_changed(repo.root / QUEUE_FILE, render_queue(merged.values()))

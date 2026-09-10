@@ -29,6 +29,23 @@ REPORT_JSON = "validation.json"
 #: Files whose content a validation depends on.
 INPUT_FILES = ("config.yaml", "sample_sheet.csv", "README.txt")
 
+#: Excluded when deciding whether a re-validation changed anything. They
+#: describe the act of validating, not the verdict.
+#:
+#: This matters more than it looks. Without it, every run rewrites all 79
+#: records and both root reports — 160 files, 164 lines, every one of them
+#: a timestamp — so an automated rebuild would produce a corpus-wide diff
+#: on every push and nobody would read the ones that mattered. The same
+#: failure mode as the ruamel boolean casing, and as `dataset.json`'s
+#: `harvested_at`.
+#:
+#: It is also what this document already says a validation *is*: "not a
+#: health check that expires with age" but "a claim about a specific pair
+#: of inputs [that] stays true until one of those inputs changes". A
+#: fresh date on an unchanged verdict contradicts that. `validated_at`
+#: means *when this verdict was established*.
+VOLATILE_FIELDS = frozenset({"validated_at", "tool_version"})
+
 
 class ReportState(enum.Enum):
     PASS = "PASS"
@@ -147,6 +164,10 @@ class ValidationRecord:
         payload["state"] = self.state.value
         return payload
 
+    def substance(self) -> dict:
+        """The verdict, without when it was reached or by what version."""
+        return {k: v for k, v in self.as_dict().items() if k not in VOLATILE_FIELDS}
+
     @classmethod
     def from_dict(cls, payload: dict) -> ValidationRecord:
         payload = dict(payload)
@@ -154,10 +175,28 @@ class ValidationRecord:
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in payload.items() if k in known})
 
+    def render_json(self) -> str:
+        return json.dumps(self.as_dict(), indent=2) + "\n"
+
+    def reconcile_with(self, path: Path) -> ValidationRecord:
+        """Adopt the recorded date when the verdict is unchanged.
+
+        Must be called **before** rendering anything from this record.
+        The markdown report prints `validated_at` too, so normalising it
+        inside `write_json` would leave the markdown carrying a fresh
+        date while the JSON kept the old one — and the markdown would
+        then churn on every run even though the verdict had not moved.
+        """
+        previous = load_record(path)
+        if previous is not None and previous.substance() == self.substance():
+            self.validated_at = previous.validated_at
+            self.tool_version = previous.tool_version
+        return self
+
     def write_json(self, path: Path) -> bool:
         from congen.core.metadata.writers import write_if_changed
 
-        return write_if_changed(path, json.dumps(self.as_dict(), indent=2) + "\n")
+        return write_if_changed(path, self.render_json())
 
 
 def load_record(path: Path) -> ValidationRecord | None:

@@ -163,27 +163,32 @@ def _refresh(
     species, *, workers: int, no_cache: bool, dry_run: bool, json_path: Path | None
 ) -> None:
     cache = Cache(enabled=not no_cache)
-    results: list[tuple[str, DatasetRecord, bool]] = []
+    results: list[tuple[str, DatasetRecord, bool, list[str]]] = []
 
     def one(entry):
         harvester = Harvester.build(cache, tool_version=_tool_version())
         record = harvester.harvest(entry)
         path = entry.path / RECORD_JSON
+        if harvester.failures:
+            # Never overwrite a good record with a degraded one. The old
+            # one stays, and the caller exits non-zero so an unattended
+            # run commits nothing.
+            return entry.key, record, False, list(harvester.failures)
         if dry_run:
             # Compare substance, exactly as write_json does, or a dry run
             # would claim every record differs because of its timestamp.
             previous = load_record(path)
             if previous is not None and previous.substance() == record.substance():
-                return entry.key, record, False
-            return entry.key, record, would_change(path, record.render_json())
-        return entry.key, record, record.write_json(path)
+                return entry.key, record, False, []
+            return entry.key, record, would_change(path, record.render_json()), []
+        return entry.key, record, record.write_json(path), []
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         results.extend(pool.map(one, species))
     results.sort(key=lambda row: row[0])
 
-    for key, record, did in results:
-        state = "published" if record.published else "no data"
+    for key, record, did, failures in results:
+        state = "failed" if failures else ("published" if record.published else "no data")
         if dry_run:
             mark = "would update" if did else "current"
         else:
@@ -193,18 +198,20 @@ def _refresh(
             f"{record.count_of():4d} objects  {mark}"
         )
 
-    noted = [(key, record.notes) for key, record, _ in results if record.notes]
+    noted = [(key, record.notes) for key, record, _, _ in results if record.notes]
     if noted:
         click.echo("")
         for key, notes in noted:
             for note in notes:
                 click.echo(f"note  {key}: {note}")
 
-    changed = [key for key, _, did in results if did]
+    changed = [key for key, _, did, _ in results if did]
+    failed = [(key, f) for key, _, _, f in results if f]
     click.echo("")
     click.echo(
-        f"{len(results)} species · {sum(1 for _, r, _ in results if r.published)} published "
+        f"{len(results)} species · {sum(1 for _, r, _, _ in results if r.published)} published "
         f"· {len(changed)} {'would change' if dry_run else 'written'}"
+        + (f" · {len(failed)} failed" if failed else "")
     )
     if json_path:
         _write_json(
@@ -219,11 +226,26 @@ def _refresh(
                         "objects": record.count_of(),
                         "changed": did,
                         "notes": record.notes,
+                        "failures": next(
+                            (f for k, _, _, f in results if k == key), []
+                        ),
                     }
-                    for key, record, did in results
+                    for key, record, did, _ in results
                 ]
             },
         )
+
+    if failed:
+        click.echo("", err=True)
+        click.echo(
+            f"{len(failed)} species could not be harvested; their records were "
+            "left untouched:",
+            err=True,
+        )
+        for key, reasons in failed:
+            for reason in reasons:
+                click.echo(f"  {key}: {reason}", err=True)
+        sys.exit(EXIT_PROBLEM)
     sys.exit(EXIT_OK)
 
 

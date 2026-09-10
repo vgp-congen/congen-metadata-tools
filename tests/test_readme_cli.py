@@ -93,3 +93,54 @@ def _copy_species(tmp_path):
     root = tmp_path / "metadata"
     shutil.copytree(METADATA_ROOT, root)
     return root
+
+
+class TestFetchFailures:
+    """Unattended, a failed fetch must never reach disk.
+
+    Otherwise an outage commits a record asserting the data has no QC
+    tables, and nothing ever tells anyone.
+    """
+
+    def test_a_harvest_failure_exits_non_zero_and_writes_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        from congen.tools.readme.record import RECORD_JSON
+
+        root = _copy_species(tmp_path)
+
+        def boom(self, species):
+            self.notes = []
+            self.failures = ["GenomeArk listing failed: the network is on fire"]
+            from congen.tools.readme.record import DatasetRecord
+
+            return DatasetRecord(subject=species.key)
+
+        monkeypatch.setattr(
+            "congen.tools.readme.harvest.Harvester.harvest", boom, raising=True
+        )
+        result = run(
+            ["readme", "--refresh", "--all", "--metadata-root", str(root)]
+        )
+        assert result.exit_code == 1
+        assert "could not be harvested" in result.output
+        assert not list(root.rglob(RECORD_JSON))
+
+    def test_a_previous_good_record_survives_a_failure(self, tmp_path, monkeypatch):
+        from congen.tools.readme.record import RECORD_JSON, DatasetRecord
+
+        root = _copy_species(tmp_path)
+        species = next(iter(sorted(root.glob("species/*/*"))))
+        good = DatasetRecord(subject="keep/me", accession="GCA_1.1", published=True)
+        (species / RECORD_JSON).write_text(good.render_json())
+
+        def boom(self, sp):
+            self.notes = []
+            self.failures = ["NCBI SRA lookup failed: timeout"]
+            return DatasetRecord(subject=sp.key)
+
+        monkeypatch.setattr(
+            "congen.tools.readme.harvest.Harvester.harvest", boom, raising=True
+        )
+        run(["readme", "--refresh", "--all", "--metadata-root", str(root)])
+        assert "keep/me" in (species / RECORD_JSON).read_text()

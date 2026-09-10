@@ -247,14 +247,50 @@ class TestHarvestDegraded:
         assert record.samples == {}
         assert not [n for n in record.notes if "qc/" in n]
 
-    def test_a_listing_failure_is_a_note_not_a_crash(self, harvester, species):
+    def test_a_listing_failure_is_recorded_as_a_failure_not_a_note(
+        self, harvester, species
+    ):
+        """An outage and an absence must never be confused.
+
+        Unattended, a run that treats a failed fetch as "nothing there"
+        commits a record asserting the data has no QC tables.
+        """
+
         def boom(prefix, **kw):
             raise OSError("S3 said no")
 
         harvester.genomeark.list = boom
         record = harvester.harvest(species)
         assert record.published
-        assert any("callable_sites listing failed" in n for n in record.notes)
+        assert any("callable_sites listing failed" in f for f in harvester.failures)
+        assert not any("failed" in n for n in record.notes)
+
+    def test_an_expected_absence_is_a_note_not_a_failure(self, harvester, species):
+        harvester.genomeark.objects = [
+            o for o in harvester.genomeark.objects if not o.startswith("vcfs/")
+        ]
+        harvester.harvest(species)
+        assert harvester.failures == []
+
+    def test_an_unpublished_species_is_not_a_failure(self, species):
+        """"No data yet" is the most common state in the corpus."""
+        harvester = Harvester(
+            genomeark=StubGenomeArk(published=()), ncbi=StubNcbi(), tool_version="test"
+        )
+        harvester.harvest(species)
+        assert harvester.failures == []
+        assert harvester.notes
+
+    def test_failures_reset_between_species(self, harvester, species):
+        def boom(prefix, **kw):
+            raise OSError("S3 said no")
+
+        harvester.genomeark.list = boom
+        harvester.harvest(species)
+        assert harvester.failures
+        harvester.genomeark.list = lambda prefix, **kw: StubListing((), ())
+        harvester.harvest(species)
+        assert harvester.failures == []
 
     def test_a_counterpart_accession_resolves_and_is_flagged(self, harvester, species):
         """The grus-americana case: config says GCF, GenomeArk says GCA."""
