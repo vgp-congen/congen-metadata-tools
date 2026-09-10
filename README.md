@@ -4,13 +4,20 @@ Tools for processing VGP Conservation Genomics metadata — the species
 metadata in [`congen-metadata`](https://github.com/vgp-congen/congen-metadata)
 and the snpArcher outputs published on GenomeArk.
 
-See [`docs/validator-design.md`](docs/validator-design.md) for the architecture
-and the design of the first two tools.
+Design documents: [`docs/validator-design.md`](docs/validator-design.md) for the
+shared architecture and `congen validate`;
+[`docs/readme-design.md`](docs/readme-design.md) for `congen readme` and
+`congen citations`.
 
 ## Status
 
-All five milestones are in place. `congen validate` runs tiers 0, 1, 2, 3a, 3b
-and 4 over one species or the whole corpus, plus tier 5 behind `--check-sra`.
+`congen validate` is complete: tiers 0, 1, 2, 3a, 3b and 4 over one species or
+the whole corpus, plus tier 5 behind `--check-sra`, and validation reports
+written into `congen-metadata`.
+
+`congen readme` and `congen citations` are **designed but not built**. See
+[`docs/readme-design.md`](docs/readme-design.md); work starts at Phase 0, a
+one-species vertical slice.
 
 | Module | What it does |
 |---|---|
@@ -27,9 +34,17 @@ and 4 over one species or the whole corpus, plus tier 5 behind `--check-sra`.
 | `congen.core.remote.ncbi` | NCBI Datasets metadata and assembly reports |
 | `congen.core.remote.qc` | snpArcher QC tables (`contig_map.tsv` so far) |
 | `congen.core.remote.sra` | NCBI SRA runinfo, batched and rate-limited |
-| `congen.tools.validate` | 45 checks across tiers 0, 1, 2, 3a, 3b, 4 and 5 |
+| `congen.tools.validate` | 44 registered checks across tiers 0, 1, 2, 3a, 3b, 4 and 5, plus `G020`/`G021` at corpus level |
 
-Not yet built: the CI workflow and the `readme` tool.
+Not yet built:
+
+| | Status |
+|---|---|
+| `congen readme` | designed — [`docs/readme-design.md`](docs/readme-design.md), Phases 0–5 |
+| `congen citations` | designed — same document, Phase 4 |
+| `core.remote.qc` coverage tables | designed — Phase 1; only `contig_map.tsv` exists today |
+| `core.remote.literature` | designed — Phase 4, Europe PMC |
+| CI workflows | deferred — validator milestone 7 / readme Phase 6 |
 
 ## Usage
 

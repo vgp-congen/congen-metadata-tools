@@ -3,8 +3,8 @@
 This repo will host several tools over the metadata in
 [`congen-metadata`](https://github.com/vgp-congen/congen-metadata) and the
 snpArcher outputs on GenomeArk. This document defines the shared core those tools
-build on, specifies the first tool (`congen validate`), and sketches the second
-(`congen readme`) far enough to check that the core boundary is drawn correctly.
+build on and specifies the first tool (`congen validate`). The second tool has
+its own document: [`readme-design.md`](readme-design.md).
 
 ## Part 1 — Shared architecture
 
@@ -34,12 +34,13 @@ congen-metadata-tools/
         qc.py                    snpArcher QC/callable-sites table readers
         ncbi.py                  datasets API + assembly_report.txt
         sra.py                   NCBI SRA runinfo (run → biosample, bioproject)
-        literature.py            study → publication lookup (readme tool)
+        literature.py            study → publication lookup (citations tool)
       report/render.py           human / json / github renderers
       cli.py                     `congen` dispatcher
     tools/
       validate/                  Part 2
-      readme/                    Part 3
+      readme/                    readme-design.md
+      citations/                 readme-design.md, Part 4
   tests/fixtures/                recorded responses; the suite runs offline
 ```
 
@@ -62,7 +63,7 @@ With two concrete tools the shared surface is no longer guesswork:
 | `remote/qc.py` | `S005` sample list | **coverage range, het, missingness** | status |
 | `remote/ncbi.py` | reference identity | assembly name, organism | sheet builder |
 | `remote/sra.py` | `E001`–`E003`, `R017` | run counts, study titles | sheet builder |
-| `remote/literature.py` | — | citations | — |
+| `remote/literature.py` | — | — | `citations`: proposes citation rows |
 | `findings.py`, `report/` | primary consumer | diagnostics while generating | all |
 | `http.py`, `cache.py` | all remote | all remote | all |
 
@@ -662,62 +663,40 @@ Be a good citizen: bounded concurrency, backoff on 5xx/503 and connection resets
 descriptive User-Agent on every NCBI call, and the per-host rate limiter for
 eutils.
 
-## Part 3 — `congen readme` (sketch)
+## Part 3 — `congen readme` — superseded
 
-The second tool. Generates a richer `README.md` per species, extending today's
-minimal `README.txt` with sample counts, coverage range, citations, and more.
-Sketched here only far enough to confirm what it demands from core — the tool
-itself needs its own design pass.
+This part existed to answer one question: what does a second tool demand of core,
+and is the boundary drawn in the right place? **It did its job.** Two core modules
+exist because of the readme generator rather than the validator —
+`core.remote.qc` and `core.metadata.writers` — and both turned out to have a
+validator consumer as well, which is the signal that they belong in core rather
+than inside a tool. The boundary held.
 
-**What it needs that core doesn't have yet:**
+The tool itself is now specified in
+[`readme-design.md`](readme-design.md), which supersedes everything this part
+said about it. Three of the sketch's conclusions were reversed by that design
+pass, and they are worth recording here because each was argued for at the time:
 
-- **`remote/qc.py`** — the snpArcher QC tables are plain TSVs and carry most of
-  what the readme wants:
+1. **The generated file is `README.md`, not a differently-named sibling.** The
+   sketch leaned toward `DATASET.md` to keep GitHub rendering `README.txt`. The
+   decision went the other way: the rich document should be the front door.
+   `README.txt` remains authoritative for the bioproject list and remains what
+   `R020`, `G017`, `G018` and `E002`/`E003` read.
+2. **The document is fully generated, in one managed region.** The sketch
+   proposed per-section managed blocks. One region turns out to make an orphaned
+   block unrepresentable when a species moves between document modes, which was
+   otherwise the largest implementation risk.
+3. **`remote/literature.py` is not called by the readme generator, and not over
+   NCBI `elink`.** Measured on 25 sampled bioprojects, `elink` resolves 2 to a
+   publication; Europe PMC full-text accession search resolves 17. Citations
+   therefore live in a human-curated file in `congen-metadata/references/`, and
+   `literature.py` only *proposes* rows for it from a separate `congen citations`
+   tool. This also answers the old open question about what a dataset's citable
+   reference is: whatever a human confirms.
 
-  | File | Provides |
-  |---|---|
-  | `qc/individuals.idepth` | `MEAN_DEPTH` per sample → **coverage range** |
-  | `callable_sites/coverage_thresholds.tsv` | `cohort_mean_coverage`, `min_coverage`, `max_coverage` |
-  | `qc/individuals.het` | `F` (inbreeding coefficient) per sample |
-  | `qc/individuals.imiss` | `F_MISS` per sample |
-  | `qc/individuals.samps.txt` | sample list (already used by `S005`) |
-
-- **`metadata/writers.py`** with round-trip YAML — this is why it moves into
-  milestone 1 rather than staying a placeholder.
-- **`remote/literature.py`** — bioproject/study → publication, for citations.
-  Europe PMC or NCBI elink; needs a design decision about what counts as the
-  citable reference for a dataset.
-
-**Three decisions this tool forces, worth settling before it is built:**
-
-1. **Additional to `README.txt`, not a replacement — settled.** The baseline
-   `README.txt` stays, and stays authoritative; the generated document is a
-   richer sibling. So the validator's `R020` and `E002`/`E003` keep reading
-   `README.txt` unchanged, and there is no migration to sequence. Its presence
-   is recorded as an optional status artifact rather than a finding.
-
-   The generated file's **name is not settled**, and may deliberately avoid
-   `README.md` to prevent confusion. Two consequences for the implementation:
-   the name lives in exactly one constant (`congen.tools.readme.OUTPUT_NAME`)
-   with a CLI override, so changing it later is a one-line edit; and
-   `core.metadata` keeps only the `README.txt` constant, since core has no
-   business knowing about a tool's output.
-
-   One concrete argument against `README.md` specifically: GitHub prefers
-   `README.md` over `README.txt` when both are present, so adding it would hide
-   the baseline file from every directory listing in the web UI. If `README.txt`
-   is to remain the primary document, the generated one wants a different name —
-   `DATASET.md` reads as a sibling with its own purpose rather than a competing
-   readme. If the intent is the opposite, that the rich document should be what
-   people see first, `README.md` gets that for free.
-2. **Fully generated, or generated sections inside a hand-written file?** If any
-   species will ever carry hand-written prose, use explicit managed-block markers
-   (`<!-- congen:begin stats -->` … `<!-- congen:end stats -->`) and only ever
-   rewrite between them. Retrofitting that after hand edits exist is painful.
-3. **Determinism.** Output must be byte-identical across runs given the same
-   inputs — stable ordering, no timestamps, rounded numbers pinned — or CI will
-   see a diff on every run. Pair the tool with `--check` (exit non-zero if
-   regenerating would change anything), which is what makes it CI-usable.
+The determinism requirement in the sketch survived unchanged, and is now sharper
+— `dataset.json` is committed, so rendering is a pure offline function and
+staleness is testable by re-rendering.
 
 ## Part 4 — validation reports
 
@@ -939,8 +918,10 @@ species and `--stale` is the filter.
 7. **CI workflows** for `congen-metadata` — deferred, along with the question of
    how the `STALE` stamp reaches a pull request. The tool supports either
    answer.
-8. **`congen readme`** (Part 3), which reuses the markdown renderer and grows
-   `core.remote.qc` into the coverage tables.
+8. **`congen readme`** — designed, not yet built. Reuses the markdown renderer
+   and grows `core.remote.qc` into the coverage tables. Its own phases are in
+   [`readme-design.md`](readme-design.md); Phase 0 is a one-species vertical
+   slice, and its Phase 6 is the same deferred CI work as milestone 7 above.
 
 Regression-test milestone 2 against the baseline: the counts below are the
 expected output, and any change to them should be explained.
@@ -1035,12 +1016,11 @@ species have no repo directory yet. That is expected backlog, not a finding —
 
 ## Open questions
 
-- **What to call the generated document.** Settled that it is additional to
-  `README.txt`; the name is not. See decision 1 in Part 3 — it is one constant,
-  so it need not block anything.
-- **What is the citable reference for a dataset?** The bioproject, the assembly
-  paper, the paper that generated the reads, or all three. Shapes
-  `remote/literature.py` and whether it needs Europe PMC at all.
+Both readme-related questions here are now answered in
+[`readme-design.md`](readme-design.md): the generated document is `README.md`,
+and a dataset's citable reference is whatever a human confirms in the curated
+citations file. What remains for this document:
+
 - **Should `F022`** (species absent from the VGP list) **ever be an error?**
   Currently a warning, and it fires on nothing — all 79 repo species are listed.
   If every congen species must by definition be a VGP species, error is more
