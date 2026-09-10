@@ -209,8 +209,22 @@ epistemic states:
 
 | Trip | n today | State | Alert |
 |---|---|---|---|
-| `G017`, `G018`, `R020` | 10 | the list is **missing** from the repo | `[!WARNING]` — no reviewed bioproject list recorded; import it from GenomeArk |
-| `E001`, `E002`, `E003` | 3 | the list **exists and is wrong** | `[!CAUTION]` — the recorded list is known incorrect |
+| `G017`, `G018`, `R020` | 14 | the list is **missing** from the repo | `[!WARNING]` — no reviewed bioproject list recorded; import it from GenomeArk |
+| `E001`, `E002`, `E003` **fired** | 3 | the list **exists and is wrong** | `[!CAUTION]` — the recorded list is known incorrect |
+
+**The stronger rendering requires a wrongness check to have actually fired, not
+merely to be unsound.** This looked like a distinction without a difference until
+the gate ran over the corpus: for all fourteen `G017` species, `R020`, `E002` and
+`E003` come back **skipped**, because every one of them needs the `README.txt`
+that `G017` is complaining about. Selecting the rendering by "is any of
+`E001`–`E003` unsound" would therefore label all fourteen *demonstrably wrong*,
+which asserts something nobody established — the list is absent, and an absent
+list cannot be incorrect. Selecting on `FIRED` gives 14 missing and 3 wrong,
+which is the truth.
+
+The same distinction drives what the document *names*. For a `G017` species the
+finding to cite is `G017`; `R020`, `E002` and `E003` are downstream consequences
+of it, and listing them would misdescribe one problem as four.
 
 **No bioproject list is rendered in either case, and no caveated list either.** A
 wrong list with a warning above it still gets copy-pasted. And for `E003`
@@ -250,41 +264,63 @@ explicit statement of the obligation, and by `congen citations --report` trackin
 it corpus-wide. Not eliminated. If the trade ever looks wrong, gate B moves from
 block-level to document-level by changing one predicate's call site.
 
-### Corpus baseline — 79 species
+### Corpus baseline — 79 species, as of 2026-09-10
 
 ```
 53   full, fully cited
-13   full, citations blocked      10 × G017 · 3 × E002/E003
-13   truncated                    10 × no data published · 3 × validation errors
+17   full, citations blocked      14 × G017 · 3 × E002/E003
+ 9   truncated                     7 × no data published · 3 × validation errors
 ```
+
+**These counts move, and that is not a defect.** Between 2026-09-09 and
+2026-09-10 five species gained data on GenomeArk — both partial uploads
+completed, and three previously-absent species were published — and the split
+went from 53/13/13 to 53/17/9 with nothing wrong anywhere. Four species left the
+truncated set and entered the blocked set in the same step: complete and
+error-free, but with no repo `README.txt`. `cited` landing on 53 twice is
+coincidence.
+
+That is why the test suite asserts the gate's **invariants** rather than these
+numbers — see Part 5 — and why `congen readme --gate-report` exists to print
+them offline on demand.
 
 Truncated by gate A:
 
 ```
-FAIL     anser-albifrons (S001,S002)   grus-americana (F021, partial)
-         sturnus-vulgaris (F020, absent)
-PENDING  caprimulgus-europaeus, haliaeetus-albicilla, taeniopygia-guttata,
-         astatotilapia-calliptera, coregonus-lavaretus, arvicola-amphibius,
-         macrotis-lagotis, myotis-nattereri, notamacropus-eugenii, panthera-onca
+validation errors   anser-albifrons (S001, S002) · grus-americana (F021)
+                    sturnus-vulgaris (F020, and no data)
+no data published   caprimulgus-europaeus, taeniopygia-guttata,
+                    arvicola-amphibius, macrotis-lagotis, myotis-nattereri,
+                    notamacropus-eugenii
 ```
 
 Citations blocked, dataset otherwise complete and error-free:
 
 ```
-G017        acridotheres-tristis, catharus-ustulatus, falco-peregrinus,
-            hirundo-rustica, esox-lucius, eubalaena-glacialis, lemur-catta,
-            neofelis-nebulosa, phocoena-sinus, eublepharis-macularius
-E002/E003   dryobates-pubescens, cyclopterus-lumpus, sus-scrofa-domesticus
+G017 fired (14)   acridotheres-tristis, catharus-ustulatus, falco-peregrinus,
+                  hirundo-rustica, haliaeetus-albicilla, esox-lucius,
+                  astatotilapia-calliptera, coregonus-lavaretus,
+                  eubalaena-glacialis, lemur-catta, neofelis-nebulosa,
+                  panthera-onca, phocoena-sinus, eublepharis-macularius
+E002/E003 fired   dryobates-pubescens, cyclopterus-lumpus, sus-scrofa-domesticus
 ```
 
-**The blocked set is a work queue, and it mostly clears mechanically.** All ten
-`G017` species have a `README.txt` on GenomeArk that was never copied back — one
-`aws s3 cp` each. All three `E002`/`E003` species cite the *assembly* BioProject
-where the reads sit under a separate *raw reads* BioProject — one edit each. So a
-strict gate is not a standing 16% citation-blocked rate; it is thirteen actions.
+**The blocked set is a work queue, and it mostly clears mechanically.** All
+fourteen `G017` species have a `README.txt` on GenomeArk that was never copied
+back — one `aws s3 cp` each. All three `E002`/`E003` species cite the *assembly*
+BioProject where the reads sit under a separate *raw reads* BioProject — one edit
+each. So a strict gate is not a standing 22% citation-blocked rate; it is
+seventeen actions.
 
-`sturnus-vulgaris` and `grus-americana` trip more than one reason. The truncated
-blurb lists every blocking reason, not the first.
+`sturnus-vulgaris` trips two gate-A reasons at once. The truncated blurb lists
+every blocking reason, not the first.
+
+**One further edit is worth more than any of them.** `GCA_052056855.1` —
+*Sturnus vulgaris*, the VGP main-haplotype assembly that `F020` has been naming
+all along — is now published complete: 39 samples, raw and filtered VCF, README,
+all four subdirectories. `sturnus-vulgaris/config.yaml` still declares
+`GCF_001447265.1`, an older scaffold-level assembly. One line there turns the
+corpus's only "wrong reference, no data" species into a complete one.
 
 ## Part 2 — Inputs and determinism
 
@@ -958,18 +994,41 @@ Two API notes for later phases: `SpeciesRepo.vgp_list` is a property, and
 use for the caller row — `bcftools 1.23.1` appears beside `gatk 4.6.2.0` in the
 header, and reading `tool_versions()` naively labels bcftools a variant caller.
 
-**Phase 1 — freeze the harvest schema.** `remote/qc.py` parsers for all five
-tables with fixtures; `harvest.py`; the `dataset.json` schema — five remote
-sources, ETags, the accession stamp, `tool_version`, `harvested_at`. Run over all
-79 species, review, commit. This is the only phase whose product is committed
-*data*, which is why it follows Phase 0.
+**Phase 1 — freeze the harvest schema. Done.** `remote/qc.py` parsers for all
+five tables with fixtures; `harvest.py`; the `dataset.json` schema. 79 records
+committed, 2.6 MB, harvested in 25 seconds. One `SampleTable` serves all four
+per-sample tables — they differ only in key column and value columns.
 
-**Phase 2 — the gate, against the whole corpus.** `gate.py`: both gates, the
-gating-ID constant, "ran and passed" rather than "did not fire", the digest
-cross-check, tier-5 detection. **The Part 1 baseline becomes a test before any
-rendering exists** — 53 full / 13 citations-blocked / 13 truncated over all 79
-real `validation.json` records, with the per-species reason lists. Retires the
+Two things it found the hard way:
+
+- **`harvested_at` must not count as a change.** Testing idempotence, as this
+  document requires, failed immediately: a refresh that finds nothing new rewrote
+  all 79 records, burying the one species that moved. `substance()` excludes it
+  and `tool_version`, which incidentally makes both mean *when this content was
+  first observed* — the more useful reading.
+- **An empty species selection must be a misuse exit, not a silent success.** A
+  wrong `--metadata-root` otherwise makes a CI job pass vacuously. `validate`
+  still has this gap and should get the same treatment.
+
+**Phase 2 — the gate, against the whole corpus. Done.** `gate.py`: both gates,
+`GATING_CHECKS` as a pinned public constant, "ran and passed" rather than "did
+not fire", the digest cross-check, tier-5 detection, and the accession-moved
+check. It reproduces the hand-computed baseline exactly — 53 cited, 17 blocked,
+9 truncated — before any rendering exists, which is what retires the
 correctness-of-claim risk at zero rendering cost.
+
+**The plan said to assert the counts as a regression target. That was wrong, and
+the corpus proved it within a day.** Those numbers move whenever a snpArcher run
+finishes; pinning 53/13/13 would have failed for entirely correct reasons the
+first time GenomeArk moved. So the suite asserts the gate's **invariants** —
+every truncated species states a reason, no full species carries a blocker,
+`provenance` is set exactly when citations are blocked, wrongness is claimed only
+on a *fired* check, tier 5 ran everywhere — in an opt-in `corpus` suite that
+skips when no checkout is reachable. The counts live in this document's baseline
+and in `congen readme --gate-report`, which prints them offline on demand.
+
+That is the same lesson the validator learned about `G011` and S3
+`LastModified`: assert the property, not the incidental value.
 
 **Phase 3 — the renderer.** Every block but References, the single managed region, the mode
 transition, `--check`, `--json`, variadic targets, exit codes, and the full test

@@ -34,7 +34,8 @@ where = ["src"]
 testpaths = ["tests"]
 # The suite must run offline. Tests that would touch the network are marked
 # and deselected by default.
-addopts = "-m 'not network'"
+addopts = "-m 'not network and not corpus'"
 markers = [
     "network: hits GenomeArk/NCBI/ENA; excluded by default, run with -m network",
+    "corpus: needs a real congen-metadata checkout; excluded by default, run with -m corpus",
 ]

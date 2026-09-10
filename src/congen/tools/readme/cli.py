@@ -23,6 +23,9 @@ from congen.core.cache import Cache
 from congen.core.metadata.discovery import MetadataRootNotFound, SpeciesRepo
 from congen.core.metadata.writers import would_change
 
+from congen.core.validation_record import load_record as load_validation
+
+from .gate import Mode, evaluate
 from .harvest import Harvester
 from .record import RECORD_JSON, DatasetRecord, load_record
 
@@ -71,6 +74,11 @@ def _select(repo: SpeciesRepo, targets: tuple[str, ...], all_species: bool, clad
 @click.option("--workers", type=int, default=DEFAULT_WORKERS, show_default=True)
 @click.option("--no-cache", is_flag=True, help="Bypass the on-disk cache.")
 @click.option("--dry-run", is_flag=True, help="With --refresh: harvest but write nothing.")
+@click.option(
+    "--gate-report",
+    is_flag=True,
+    help="Offline: which species would render fully, and why the rest would not.",
+)
 def readme(
     targets: tuple[str, ...],
     all_species: bool,
@@ -81,8 +89,12 @@ def readme(
     workers: int,
     no_cache: bool,
     dry_run: bool,
+    gate_report: bool,
 ) -> None:
     """Generate a per-species README.md in congen-metadata."""
+    if gate_report:
+        _gate_report(targets, all_species, clade, metadata_root)
+        return
     if not refresh:
         click.echo(
             "congen readme currently implements --refresh only; rendering lands "
@@ -182,3 +194,64 @@ def readme(
         )
 
     sys.exit(EXIT_OK)
+
+
+def _gate_report(
+    targets: tuple[str, ...],
+    all_species: bool,
+    clade: str | None,
+    metadata_root: Path | None,
+) -> None:
+    """Print the gate outcome per species. Offline, reads nothing remote.
+
+    Deliberately a report rather than a test assertion: the counts move
+    legitimately every time a pipeline run finishes, so pinning them in
+    the suite would fail for the right reasons. The suite asserts the
+    logic; this shows the numbers.
+    """
+    try:
+        repo = SpeciesRepo(metadata_root) if metadata_root else SpeciesRepo.discover()
+        species = _select(repo, targets, all_species or not targets, clade)
+    except (MetadataRootNotFound, FileNotFoundError, ValueError) as exc:
+        click.echo(f"{exc}", err=True)
+        sys.exit(EXIT_MISUSE)
+    if not species:
+        click.echo("no species found", err=True)
+        sys.exit(EXIT_MISUSE)
+
+    rows = []
+    for entry in species:
+        dataset = load_record(entry.path / RECORD_JSON)
+        verdict = evaluate(
+            entry.path,
+            load_validation(entry.path / "validation.json"),
+            harvested_accession=dataset.accession if dataset else None,
+        )
+        rows.append((entry.key, verdict))
+
+    full = [(k, v) for k, v in rows if v.is_full]
+    cited = [(k, v) for k, v in full if v.cited]
+    blocked = [(k, v) for k, v in full if not v.cited]
+    truncated = [(k, v) for k, v in rows if not v.is_full]
+
+    if truncated:
+        click.echo("truncated — no dataset to describe:")
+        for key, verdict in truncated:
+            click.echo(f"  {key:42} {'; '.join(str(r) for r in verdict.blockers)}")
+        click.echo("")
+    if blocked:
+        click.echo("full, citations blocked:")
+        for key, verdict in blocked:
+            fired = ",".join(verdict.fired) or "nothing fired"
+            unsound = ",".join(
+                f"{s.check}={s.outcome}" for s in verdict.unsound if s.check not in verdict.fired
+            )
+            click.echo(
+                f"  {key:42} {str(verdict.provenance):8} fired={fired}"
+                + (f"  consequent={unsound}" if unsound else "")
+            )
+        click.echo("")
+    click.echo(
+        f"{len(rows)} species · {len(cited)} full and cited · "
+        f"{len(blocked)} citations blocked · {len(truncated)} truncated"
+    )
