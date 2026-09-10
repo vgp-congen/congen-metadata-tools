@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: pip install -e '.[dev]'
+
+      # The suite is offline by design: metadata fixtures are real files
+      # copied from congen-metadata, and header fixtures are 16 KiB
+      # prefixes of real GenomeArk objects. Nothing here touches the
+      # network, so nothing here can fail because NCBI is down.
+      - name: Test
+        run: pytest
+
+      # `-m corpus` is deselected by default and skipped without a
+      # checkout. Those eight tests assert the document gates'
+      # invariants against all 79 real validation records, and they are
+      # what would catch an accidental gate change — but reaching
+      # congen-metadata from here needs a credential, so for now they
+      # stay a local check. See docs/readme-design.md, phase 6.
+      - name: Report what was skipped
+        run: pytest -m corpus --collect-only -q || true
