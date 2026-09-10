@@ -1,13 +1,12 @@
 """``congen citations`` — the command line.
 
-    congen citations --report     offline: the review queue, worst first
-    congen citations --propose    network: write candidates to a staging file
+    congen citations --report     offline: what is decided, what remains
+    congen citations --collect    offline: file finished blocks out of the queue
+    congen citations --propose    network: add newly-seen BioProjects to the queue
 
-`--propose` never touches the curated file. It writes proposals beside
-it, for a human to accept, reject or ignore. That separation is the whole
-point: the lookup resolves about two thirds of bioprojects and cannot
-tell a paper that generated data from one that reused it, so its output
-is evidence, not a decision.
+Each has one job. `--propose` never decides anything and never touches
+the record; `--collect` never looks anything up; `--report` writes
+nothing.
 """
 
 from __future__ import annotations
@@ -20,12 +19,17 @@ import click
 
 from congen.core.cache import Cache
 from congen.core.metadata.citations import (
-    CITATIONS_FILE,
-    Citation,
+    QUEUE_FILE,
+    RECORD_FILE,
+    Entry,
     Status,
     load_citations,
     merge_proposals,
-    render_citations,
+    parse_queue,
+    parse_record,
+    render_queue,
+    render_record,
+    reopen,
 )
 from congen.core.metadata.discovery import MetadataRootNotFound, SpeciesRepo
 from congen.core.metadata.writers import write_if_changed
@@ -40,41 +44,40 @@ EXIT_MISUSE = 2
 
 def _repo(metadata_root: Path | None) -> SpeciesRepo:
     try:
-        return SpeciesRepo(metadata_root) if metadata_root else SpeciesRepo.discover()
+        repo = SpeciesRepo(metadata_root) if metadata_root else SpeciesRepo.discover()
     except (MetadataRootNotFound, FileNotFoundError, ValueError) as exc:
         click.echo(f"{exc}", err=True)
         sys.exit(EXIT_MISUSE)
+    if not repo.species_dirs():
+        click.echo(f"no species found under {repo.species_root}", err=True)
+        sys.exit(EXIT_MISUSE)
+    return repo
 
 
-def survey(repo: SpeciesRepo) -> tuple[dict[str, Counter], dict[str, set[str]]]:
-    """Which bioprojects the corpus depends on, and how much.
+def survey(repo: SpeciesRepo) -> tuple[dict[str, int], dict[str, list[str]]]:
+    """Which BioProjects the corpus depends on, and how much.
 
-    Two sources, and the union is what needs a citation. `README.txt`
-    says what a species *claims* to draw on; `dataset.json`'s SRA
-    mapping says what actually contributed runs. `E002` and `E003` exist
-    because those two disagree for three species, so taking either alone
-    would build the wrong queue.
+    The **union** of two sources. `README.txt` says what a species claims
+    to draw on; the SRA mapping in `dataset.json` says what actually
+    contributed runs. Those disagree — `E002` and `E003` exist because of
+    it — so either source alone builds the wrong queue.
 
-    Weight is measured in **samples**, not species: one unreviewed
-    project contributing forty samples matters more than one contributing
-    one.
+    Weight is samples, not species: one unreviewed project carrying 150
+    samples matters more than one carrying a single sample.
     """
-    samples: dict[str, Counter] = {}
+    samples: Counter = Counter()
     species_of: dict[str, set[str]] = {}
     for species in repo.iter_species():
         dataset = load_record(species.path / RECORD_JSON)
-        attributed = (
-            dataset.bioprojects_by_sample(species.sheet) if dataset else {}
-        )
-        for sample, projects in attributed.items():
+        attributed = dataset.bioprojects_by_sample(species.sheet) if dataset else {}
+        for projects in attributed.values():
             for project in projects:
-                samples.setdefault(project, Counter())[species.key] += 1
+                samples[project] += 1
                 species_of.setdefault(project, set()).add(species.key)
-        declared = species.readme.bioprojects if species.readme else []
-        for project in declared:
-            samples.setdefault(project, Counter())
+        for project in species.readme.bioprojects if species.readme else []:
+            samples.setdefault(project, 0)
             species_of.setdefault(project, set()).add(species.key)
-    return samples, species_of
+    return dict(samples), {k: sorted(v) for k, v in species_of.items()}
 
 
 @click.command("citations")
@@ -83,38 +86,34 @@ def survey(repo: SpeciesRepo) -> tuple[dict[str, Counter], dict[str, set[str]]]:
     type=click.Path(path_type=Path, file_okay=False),
     help="congen-metadata checkout (default: discovered, or $CONGEN_METADATA_ROOT).",
 )
-@click.option("--report", "report", is_flag=True, help="Offline: the review queue.")
+@click.option("--report", is_flag=True, help="Offline: progress and what remains.")
+@click.option(
+    "--collect",
+    is_flag=True,
+    help="Offline: file decided blocks into the record and drop them from the queue.",
+)
 @click.option(
     "--propose",
     is_flag=True,
-    help="Network: write candidate citations to a staging file for review.",
-)
-@click.option(
-    "--only-unreviewed/--all-projects",
-    default=True,
-    show_default=True,
-    help="With --propose: skip bioprojects a human has already ruled on.",
+    help="Network: look up newly-seen BioProjects and add them to the queue.",
 )
 @click.option("--limit", type=int, help="With --propose: stop after this many lookups.")
 @click.option("--no-cache", is_flag=True, help="Bypass the on-disk cache.")
 def citations(
     metadata_root: Path | None,
     report: bool,
+    collect: bool,
     propose: bool,
-    only_unreviewed: bool,
     limit: int | None,
     no_cache: bool,
 ) -> None:
-    """Curate the BioProject citations the generated READMEs cite."""
-    if report == propose:
-        click.echo("choose exactly one of --report or --propose.", err=True)
+    """Curate the BioProject citations the generated READMEs depend on."""
+    chosen = [name for name, on in (("--report", report), ("--collect", collect), ("--propose", propose)) if on]
+    if len(chosen) != 1:
+        click.echo("choose exactly one of --report, --collect or --propose.", err=True)
         sys.exit(EXIT_MISUSE)
 
     repo = _repo(metadata_root)
-    if not repo.species_dirs():
-        click.echo(f"no species found under {repo.species_root}", err=True)
-        sys.exit(EXIT_MISUSE)
-
     index = load_citations(repo.root)
     for issue in index.issues:
         click.echo(f"warning  {issue.code} {issue.message}", err=True)
@@ -122,135 +121,218 @@ def citations(
     samples, species_of = survey(repo)
     if report:
         _report(repo, index, samples, species_of)
+    elif collect:
+        _collect(repo, index)
     else:
-        _propose(
-            repo,
-            index,
-            samples,
-            species_of,
-            only_unreviewed=only_unreviewed,
-            limit=limit,
-            no_cache=no_cache,
-        )
+        _propose(repo, index, samples, species_of, limit=limit, no_cache=no_cache)
 
 
-def _rank(samples: dict[str, Counter], species_of: dict[str, set[str]]):
-    """Worst first: most samples, then most species, then accession."""
+def _rank(accessions, samples, species_of):
     return sorted(
-        samples,
-        key=lambda project: (
-            -sum(samples[project].values()),
-            -len(species_of.get(project, ())),
-            project,
-        ),
+        accessions,
+        key=lambda a: (-samples.get(a, 0), -len(species_of.get(a, ())), a),
     )
 
 
 def _report(repo, index, samples, species_of) -> None:
-    ranked = _rank(samples, species_of)
-    by_status = Counter(index.status_of(project) for project in ranked)
+    known = set(samples) | set(index.entries)
+    by_status = Counter(index.status_of(a) for a in known)
+    total = sum(samples.values())
+    covered = sum(samples.get(a, 0) for a in known if index.get(a).is_citable)
+    settled = sum(samples.get(a, 0) for a in known if index.status_of(a).is_reviewed)
 
-    click.echo(f"{len(ranked)} bioprojects across {len(list(repo.species_dirs()))} species")
-    for status in (Status.CONFIRMED, Status.NONE, Status.UNREVIEWED):
-        click.echo(f"  {by_status.get(status, 0):4d}  {status}")
-
-    total_samples = sum(sum(counts.values()) for counts in samples.values())
-    covered = sum(
-        sum(samples[project].values())
-        for project in ranked
-        if index.get(project).is_citable
-    )
-    if total_samples:
+    click.echo(f"{len(known)} BioProjects · {total} attributed samples")
+    for status in (Status.CONFIRMED, Status.NOT_FOUND, Status.UNREVIEWED):
+        label = {
+            Status.NOT_FOUND: "not_found  (searched; re-checked when something new appears)",
+        }.get(status, str(status))
+        click.echo(f"  {by_status.get(status, 0):4d}  {label}")
+    if total:
+        click.echo("")
         click.echo(
-            f"\nsample coverage: {covered} of {total_samples} attributed samples "
-            f"have a confirmed citation ({100 * covered / total_samples:.0f}%)"
+            f"reviewed:  {settled:5d} of {total} samples ({100 * settled / total:.0f}%)"
+        )
+        click.echo(
+            f"citable:   {covered:5d} of {total} samples ({100 * covered / total:.0f}%)"
         )
 
-    queue = [project for project in ranked if not index.status_of(project).is_reviewed]
+    if index.unfiled:
+        click.echo("")
+        click.echo(
+            f"{len(index.unfiled)} decided block(s) still in the queue; "
+            f"run `congen citations --collect` to file them."
+        )
+
+    queue = _rank(index.needs_review(known), samples, species_of)
     if not queue:
         click.echo("\nnothing awaiting review")
         return
-    click.echo(f"\nawaiting review, worst first ({len(queue)}):")
-    click.echo(f"  {'bioproject':16} {'samples':>7} {'species':>7}  title")
-    for project in queue:
-        entry = index.get(project)
-        n_samples = sum(samples[project].values())
+
+    # How far a given number of decisions gets you. The weight is heavily
+    # concentrated, and a reviewer facing 298 items deserves to know that
+    # the first two dozen are most of the value.
+    milestones = _milestones([samples.get(a, 0) for a in queue], total - settled)
+    if milestones:
+        click.echo("")
+        click.echo("the queue is front-loaded:")
+        for target, count in milestones:
+            click.echo(
+                f"  {count:4d} more decision(s) would cover {target}% of the "
+                f"remaining {total - settled} samples"
+            )
+    click.echo(f"\nawaiting review ({len(queue)}), worst first:")
+    for accession in queue[:15]:
+        entry = index.get(accession)
         click.echo(
-            f"  {project:16} {n_samples:7d} {len(species_of.get(project, ())):7d}  "
+            f"  {accession:16} {samples.get(accession, 0):5d} samples  "
             f"{(entry.title or '—')[:56]}"
         )
+    if len(queue) > 15:
+        click.echo(f"  … and {len(queue) - 15} more; see {QUEUE_FILE}")
 
 
-def _propose(
-    repo, index, samples, species_of, *, only_unreviewed: bool, limit: int | None, no_cache: bool
-) -> None:
-    ranked = _rank(samples, species_of)
-    wanted = [
-        project
-        for project in ranked
-        if not (only_unreviewed and index.status_of(project).is_reviewed)
-    ]
+def _collect(repo, index) -> None:
+    """Move decided blocks out of the queue and into the record."""
+    try:
+        queued, _ = parse_queue((repo.root / QUEUE_FILE).read_text("utf-8"))
+    except (FileNotFoundError, OSError):
+        click.echo(f"no queue at {repo.root / QUEUE_FILE}", err=True)
+        sys.exit(EXIT_MISUSE)
+    try:
+        record = parse_record((repo.root / RECORD_FILE).read_text("utf-8"))
+    except (FileNotFoundError, OSError):
+        record = {}
+
+    decided = {a: e for a, e in queued.items() if e.status.is_reviewed}
+    remaining = {a: e for a, e in queued.items() if not e.status.is_reviewed}
+    if not decided:
+        click.echo("nothing decided in the queue")
+        sys.exit(EXIT_OK)
+
+    for accession, entry in sorted(decided.items()):
+        record[accession] = entry
+        detail = ", ".join(entry.dois) if entry.dois else "no publication"
+        click.echo(f"filed  {accession:16} {entry.status}  {detail}")
+
+    (repo.root / RECORD_FILE).parent.mkdir(parents=True, exist_ok=True)
+    wrote_record = write_if_changed(repo.root / RECORD_FILE, render_record(record.values()))
+    wrote_queue = write_if_changed(repo.root / QUEUE_FILE, render_queue(remaining.values()))
+    click.echo("")
+    click.echo(
+        f"{len(decided)} filed · {len(remaining)} still awaiting review · "
+        f"record {'updated' if wrote_record else 'unchanged'}, "
+        f"queue {'updated' if wrote_queue else 'unchanged'}"
+    )
+    sys.exit(EXIT_OK)
+
+
+def _propose(repo, index, samples, species_of, *, limit: int | None, no_cache: bool) -> None:
+    try:
+        queued, _ = parse_queue((repo.root / QUEUE_FILE).read_text("utf-8"))
+    except (FileNotFoundError, OSError):
+        queued = {}
+
+    known = set(samples) | set(index.entries)
+    # `confirmed` and `none` are final and never looked up again. `pending`
+    # is looked up precisely so a paper that has since appeared can be
+    # noticed. And a queued block that already has candidates is left
+    # alone — someone may be part-way through reviewing it.
+    wanted = _rank(
+        [
+            a
+            for a in known
+            if index.status_of(a) is not Status.CONFIRMED
+            and not queued.get(a, Entry(a)).dois
+        ],
+        samples,
+        species_of,
+    )
     if limit:
         wanted = wanted[:limit]
     if not wanted:
-        click.echo("nothing to propose")
+        click.echo("nothing to look up; every BioProject is decided or already queued")
         sys.exit(EXIT_OK)
 
     cache = Cache(enabled=not no_cache)
     titles = BioProjects(cache).lookup(wanted)
     europepmc = EuropePmc(cache)
 
-    proposals: list[Citation] = []
-    found = errors = 0
-    for project in wanted:
-        summary = titles.get(project)
-        hits = europepmc.search_accession(project)
-        if hits.error:
-            errors += 1
-        top = hits.candidates[0] if hits.candidates else None
-        if top:
-            found += 1
-        # Always `unreviewed`: a proposal is evidence for a human, and
-        # writing `confirmed` here would be the tool deciding.
-        proposals.append(
-            Citation(
-                bioproject=project,
-                status=Status.UNREVIEWED,
-                title=summary.title if summary else "",
-                submitter=summary.submitter if summary else "",
-                doi=top.doi if top else "",
-                citation=top.citation if top else "",
-                notes=_note(hits),
-            )
+    proposals: list[Entry] = []
+    found = errors = reopened = starred = 0
+    for accession in wanted:
+        summary = titles.get(accession)
+        hits = europepmc.search_accession(accession)
+        errors += 1 if hits.error else 0
+        found += 1 if hits.candidates else 0
+        entry = Entry(
+            bioproject=accession,
+            status=Status.UNREVIEWED,
+            title=summary.title if summary else "",
+            submitter=summary.submitter if summary else "",
+            samples=samples.get(accession, 0),
+            species=species_of.get(accession, []),
         )
+        # Every candidate, not just the top one. 79 of 298 had more than
+        # one, and storing only the best made a quarter of the evidence
+        # unreachable.
+        for candidate in hits.candidates:
+            if not candidate.doi:
+                continue
+            entry.dois.append(candidate.doi)
+            entry.references[candidate.doi] = candidate.citation
+            # The submitter's own affiliation on a paper is the strongest
+            # signal available for free that the data was generated for it.
+            if entry.submitter and candidate.matches_submitter(entry.submitter):
+                entry.starred.add(candidate.doi)
+                starred += 1
+        settled = index.get(accession)
+        if settled.status is Status.NOT_FOUND:
+            # Only genuinely new evidence reopens a "no paper yet".
+            revived = reopen(settled, entry.dois)
+            if revived is None:
+                click.echo(
+                    f"{accession:16} {entry.samples:5d} samples  "
+                    f"still no new candidate; stays filed"
+                )
+                continue
+            entry.dois = revived.dois
+            entry.rejected = revived.rejected
+            entry.considered = revived.considered
+            reopened += 1
+        proposals.append(entry)
         click.echo(
-            f"{project:16} {sum(samples[project].values()):4d} samples  "
-            f"{'hit ' if top else 'none'}  {(top.doi if top else '') or (hits.error or '')}"
+            f"{accession:16} {entry.samples:5d} samples  "
+            f"{len(entry.dois)} candidate(s)"
+            + (f", {len(entry.starred)} matching the submitter" if entry.starred else "")
+            + (f"  {hits.error}" if hits.error else "")
         )
 
-    rows, touched = merge_proposals(index, proposals)
-    path = repo.root / CITATIONS_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    wrote = write_if_changed(path, render_citations(rows))
+    merged, changed = merge_proposals(queued, proposals)
+    (repo.root / QUEUE_FILE).parent.mkdir(parents=True, exist_ok=True)
+    wrote = write_if_changed(repo.root / QUEUE_FILE, render_queue(merged.values()))
     click.echo("")
     click.echo(
-        f"{len(proposals)} looked up · {found} with a candidate · "
-        f"{len(proposals) - found - errors} with none · {errors} lookup failures"
+        f"{len(wanted)} looked up · {found} with at least one candidate · "
+        f"{errors} lookup failures"
+        + (f" · {starred} affiliation match(es)" if starred else "")
+        + (f" · {reopened} reopened by new evidence" if reopened else "")
     )
-    click.echo(f"{touched} row(s) filled; {'wrote' if wrote else 'unchanged'} {path}")
     click.echo(
-        "Every row stays `unreviewed` until a human changes it. Set `confirmed` "
-        "where the candidate is the right paper, or `none` where there is "
-        "genuinely none — `none` is what stops it being proposed again."
+        f"{changed} block(s) changed; queue {'updated' if wrote else 'unchanged'} "
+        f"at {repo.root / QUEUE_FILE}"
     )
+    click.echo("Review by deleting the lines that are not true, then --collect.")
     sys.exit(EXIT_OK)
 
 
-def _note(hits) -> str:
-    if hits.error:
-        return f"lookup failed: {hits.error}"
-    if not hits.candidates:
-        return "no Europe PMC full-text match"
-    if hits.total > 1:
-        return f"{hits.total} candidates; top one shown"
-    return ""
+def _milestones(weights, remaining: int, targets=(50, 75, 90)) -> list[tuple[int, int]]:
+    if not remaining:
+        return []
+    out = []
+    running = 0
+    pending = list(targets)
+    for index, weight in enumerate(weights, start=1):
+        running += weight
+        while pending and running >= remaining * pending[0] / 100:
+            out.append((pending.pop(0), index))
+    return out

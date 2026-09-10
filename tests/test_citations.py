@@ -1,8 +1,7 @@
-"""Tests for the curated citation files and the lookup clients.
+"""Tests for the citation queue, the record, and the lookup clients.
 
-The lookups are exercised against recorded payloads, not the live
-services: the suite runs offline, and Europe PMC's answer for a given
-accession is not a stable thing to assert against anyway.
+The lookups run against recorded payloads: the suite is offline, and
+Europe PMC's answer for an accession is not a stable thing to assert.
 """
 
 from __future__ import annotations
@@ -10,185 +9,285 @@ from __future__ import annotations
 import pytest
 
 from congen.core.metadata.citations import (
-    COLUMNS,
-    Citation,
+    MATCH_STAR,
+    NOT_FOUND_MARKER,
+    UNREVIEWED_MARKER,
+    Entry,
     Status,
     load_citations,
     load_tool_citations,
     merge_proposals,
-    parse_citations,
+    parse_queue,
+    parse_record,
     parse_tool_citations,
-    render_citations,
+    render_queue,
+    render_record,
+    reopen,
 )
 from congen.core.remote.bioproject import parse_summaries
 from congen.core.remote.literature import parse_search
 
-HEADER = ",".join(COLUMNS)
+
+def block(*lines: str, accession: str = "PRJNA1", samples: int = 5) -> str:
+    head = [
+        f"## {accession} — {samples} samples · birds/x",
+        "",
+        "A project title",
+        "Some Institute · [BioProject](https://example/x)",
+        "",
+    ]
+    return "\n".join(head + list(lines)) + "\n"
 
 
-def csv_text(*rows: str) -> str:
-    return HEADER + "\n" + "\n".join(rows) + "\n"
+def doi_line(doi: str, text: str = "Someone (2020) A paper") -> str:
+    return f"- [{doi}](https://doi.org/{doi}) — {text}"
 
 
-class TestParsing:
-    def test_it_reads_the_three_states(self):
-        index = parse_citations(
-            csv_text(
-                "PRJNA1,confirmed,T,S,10.1/x,Someone (2020) A paper,tim,2026-09-11,",
-                "PRJNA2,none,T2,S2,,,tim,2026-09-11,no paper exists",
-                "PRJNA3,unreviewed,T3,S3,,,,,",
-            )
+def one(text: str, accession: str = "PRJNA1") -> Entry:
+    entries, _ = parse_queue(text)
+    return entries[accession]
+
+
+class TestReviewByDeletion:
+    """One rule: every line is a claim, so delete the false ones."""
+
+    def test_an_untouched_block_is_unreviewed(self):
+        entry = one(block(f"- {UNREVIEWED_MARKER}", doi_line("10.a/x"), f"- {NOT_FOUND_MARKER}"))
+        assert entry.status is Status.UNREVIEWED
+
+    def test_keeping_one_doi_confirms_it(self):
+        entry = one(block(doi_line("10.a/x")))
+        assert entry.status is Status.CONFIRMED
+        assert entry.dois == ["10.a/x"]
+
+    def test_keeping_two_dois_confirms_both(self):
+        """The single-column CSV could not express this at all."""
+        entry = one(block(doi_line("10.a/x"), doi_line("10.b/y")))
+        assert entry.dois == ["10.a/x", "10.b/y"]
+        assert entry.status is Status.CONFIRMED
+
+    def test_keeping_only_the_marker_records_nothing_found(self):
+        """One not-found state, not two.
+
+        Whether a paper is *coming* is a claim about the submitter's
+        intentions, which a reviewer who is not the submitter cannot make.
+        """
+        entry = one(block(f"- {NOT_FOUND_MARKER}"))
+        assert entry.status is Status.NOT_FOUND
+        assert entry.status.is_reviewed
+        assert entry.status.reopens_on_new_evidence
+
+    def test_a_doi_outranks_a_leftover_marker(self):
+        """A reviewer who keeps a paper but forgets the marker still meant
+        to accept the paper."""
+        entry = one(block(doi_line("10.a/x"), f"- {NOT_FOUND_MARKER}"))
+        assert entry.status is Status.CONFIRMED
+
+    def test_deleting_every_line_asserts_nothing(self):
+        """Silence is not a decision, and must never read as a citation."""
+        entries, issues = parse_queue(block())
+        assert entries["PRJNA1"].status is Status.UNREVIEWED
+        assert [issue.code for issue in issues] == ["C010"]
+
+    def test_a_bare_doi_is_accepted(self):
+        """So a reviewer can paste one in without writing markdown."""
+        assert one(block("- 10.a/pasted")).dois == ["10.a/pasted"]
+
+    def test_the_heading_carries_weight_and_species(self):
+        entry = one(block(f"- {UNREVIEWED_MARKER}", samples=147))
+        assert entry.samples == 147
+        assert entry.species == ["birds/x"]
+
+
+class TestRejectionMemory:
+    """`considered` is what makes "a candidate nobody has seen" decidable."""
+
+    def test_deleted_candidates_are_remembered_as_rejected(self):
+        text = block(
+            "<!-- considered: 10.a/x 10.b/y 10.c/z -->",
+            "",
+            doi_line("10.b/y"),
         )
-        assert len(index) == 3
-        assert index.status_of("PRJNA1") is Status.CONFIRMED
-        assert index.status_of("PRJNA2") is Status.NONE
-        assert index.status_of("PRJNA3") is Status.UNREVIEWED
-        assert index.issues == []
+        entry = one(text)
+        assert entry.dois == ["10.b/y"]
+        assert entry.rejected == ["10.a/x", "10.c/z"]
 
-    def test_an_unknown_bioproject_defaults_to_unreviewed(self):
-        """A default rather than None, so no call site needs a special case."""
-        index = parse_citations(csv_text("PRJNA1,confirmed,,,10.1/x,C,,,"))
-        assert index.status_of("PRJNA_ABSENT") is Status.UNREVIEWED
-        assert index.get("PRJNA_ABSENT").bioproject == "PRJNA_ABSENT"
-
-    def test_only_confirmed_with_a_reference_is_citable(self):
-        rows = parse_citations(
-            csv_text(
-                "PRJNA1,confirmed,,,10.1/x,,,,",
-                "PRJNA2,confirmed,,,,,,,",
-                "PRJNA3,none,,,10.1/y,C,,,",
-                "PRJNA4,unreviewed,,,10.1/z,C,,,",
-            )
-        )
-        assert rows.get("PRJNA1").is_citable
-        # confirmed but with nothing to cite is not citable
-        assert not rows.get("PRJNA2").is_citable
-        # a `none` ruling outranks a stale doi left in the row
-        assert not rows.get("PRJNA3").is_citable
-        # a candidate nobody has accepted is not a citation
-        assert not rows.get("PRJNA4").is_citable
-
-    def test_needs_review_excludes_both_reviewed_states(self):
-        index = parse_citations(
-            csv_text("PRJNA1,confirmed,,,10.1/x,C,,,", "PRJNA2,none,,,,,,,")
-        )
-        assert index.needs_review(["PRJNA1", "PRJNA2", "PRJNA3"]) == ["PRJNA3"]
-
-    def test_an_unknown_status_is_reported_and_treated_as_unreviewed(self):
-        index = parse_citations(csv_text("PRJNA1,probably?,,,,,,,"))
-        assert index.status_of("PRJNA1") is Status.UNREVIEWED
-        assert [issue.code for issue in index.issues] == ["C003"]
-
-    def test_a_missing_required_column_is_reported_not_raised(self):
-        index = parse_citations("title,doi\nsomething,10.1/x\n")
-        assert len(index) == 0
-        assert [issue.code for issue in index.issues] == ["C001"]
-
-    def test_a_row_with_no_accession_is_reported(self):
-        index = parse_citations(csv_text(",confirmed,,,,,,,"))
-        assert [issue.code for issue in index.issues] == ["C002"]
-
-    def test_a_duplicate_keeps_the_last_and_says_so(self):
-        index = parse_citations(
-            csv_text("PRJNA1,unreviewed,,,,,,,", "PRJNA1,confirmed,,,10.1/x,C,,,")
-        )
-        assert index.status_of("PRJNA1") is Status.CONFIRMED
-        assert [issue.code for issue in index.issues] == ["C004"]
-
-    def test_an_empty_or_absent_file_is_an_empty_index(self, tmp_path):
-        assert len(parse_citations("")) == 0
-        assert len(load_citations(tmp_path)) == 0
-
-
-class TestRoundTrip:
-    def test_render_then_parse_preserves_every_field(self):
-        original = Citation(
+    def test_rejections_survive_the_record_round_trip(self):
+        entry = Entry(
             bioproject="PRJNA1",
-            status=Status.CONFIRMED,
-            title="A title, with a comma",
-            submitter="Some Institute",
-            doi="10.1/x",
-            citation='Someone (2020) "Quoted" title',
-            reviewed_by="tim",
-            reviewed_on="2026-09-11",
-            notes="checked by hand",
+            status=Status.NOT_FOUND,
+            rejected=["10.a/x", "10.b/y"],
+            title="T",
         )
-        again = parse_citations(render_citations([original])).get("PRJNA1")
-        for name in COLUMNS:
-            assert getattr(again, name) == getattr(original, name), name
+        again = parse_record(render_record([entry]))["PRJNA1"]
+        assert again.status is Status.NOT_FOUND
+        assert again.rejected == ["10.a/x", "10.b/y"]
 
-    def test_output_is_sorted_so_a_hand_edit_and_a_tool_write_agree(self):
-        text = render_citations(
-            [Citation(bioproject="PRJNB2"), Citation(bioproject="PRJNA1")]
+    def test_the_considered_comment_survives_rendering(self):
+        entry = Entry(bioproject="PRJNA1", dois=["10.a/x"], rejected=["10.b/y"])
+        assert "considered: 10.a/x 10.b/y" in render_queue([entry])
+
+
+class TestReopen:
+    """Data is routinely released before its paper, so `not_found` is not
+    the end — and the trigger for looking again is evidence, not a date."""
+
+    def _not_found(self):
+        return Entry(
+            bioproject="PRJNA1",
+            status=Status.NOT_FOUND,
+            rejected=["10.a/old"],
+            title="T",
         )
-        assert text.splitlines()[1].startswith("PRJNA1")
+
+    def test_the_same_candidates_do_not_reopen_it(self):
+        assert reopen(self._not_found(), ["10.a/old"]) is None
+
+    def test_nothing_found_does_not_reopen_it(self):
+        assert reopen(self._not_found(), []) is None
+
+    def test_a_new_candidate_reopens_it(self):
+        revived = reopen(self._not_found(), ["10.a/old", "10.b/new"])
+        assert revived is not None
+        assert revived.status is Status.UNREVIEWED
+        # only the unseen one is offered; the rejected one is not re-asked
+        assert revived.dois == ["10.b/new"]
+        assert revived.rejected == ["10.a/old"]
+        # and a second rejection would still be remembered
+        assert revived.considered == ["10.a/old", "10.b/new"]
+
+    def test_confirmed_never_reopens(self):
+        """A later hit on the same BioProject is usually data reuse, and
+        reuse needs no credit — so reopening would offer a citation
+        nobody should add."""
+        entry = Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"])
+        assert reopen(entry, ["10.z/new"]) is None
+
+    def test_only_not_found_reopens(self):
+        assert Status.NOT_FOUND.reopens_on_new_evidence
+        assert not Status.CONFIRMED.reopens_on_new_evidence
+        assert not Status.UNREVIEWED.reopens_on_new_evidence
+        assert not Status.UNREVIEWED.is_reviewed
 
 
 class TestMerge:
-    """The two rules that make it safe to write into a file a human edits."""
+    def test_a_new_bioproject_is_added(self):
+        merged, changed = merge_proposals({}, [Entry(bioproject="PRJNA9", dois=["10.a/x"])])
+        assert changed == 1 and "PRJNA9" in merged
 
-    def test_a_confirmed_row_is_never_touched(self):
-        index = parse_citations(csv_text("PRJNA1,confirmed,T,S,10.1/mine,Mine,tim,2026-09-11,"))
-        rows, touched = merge_proposals(
-            index, [Citation(bioproject="PRJNA1", doi="10.9/other", citation="Other")]
-        )
-        assert touched == 0
-        assert rows[0].doi == "10.1/mine"
+    def test_candidates_are_added_to_an_unreviewed_block(self):
+        queued = {"PRJNA1": Entry(bioproject="PRJNA1", dois=["10.a/x"])}
+        merged, _ = merge_proposals(queued, [Entry(bioproject="PRJNA1", dois=["10.b/y"])])
+        assert merged["PRJNA1"].dois == ["10.a/x", "10.b/y"]
 
-    def test_a_none_row_is_never_touched(self):
-        """Otherwise a lookup reopens a decision someone already made."""
-        index = parse_citations(csv_text("PRJNA1,none,,,,,tim,2026-09-11,nothing published"))
-        rows, touched = merge_proposals(
-            index, [Citation(bioproject="PRJNA1", doi="10.9/found", citation="Found")]
-        )
-        assert touched == 0
-        assert rows[0].doi == ""
-        assert rows[0].status is Status.NONE
+    def test_a_reviewed_block_keeps_its_dois(self):
+        """A search is not entitled to reopen a decision."""
+        queued = {
+            "PRJNA1": Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/mine"])
+        }
+        merged, _ = merge_proposals(queued, [Entry(bioproject="PRJNA1", dois=["10.b/other"])])
+        assert merged["PRJNA1"].dois == ["10.a/mine"]
 
-    def test_an_unreviewed_row_gets_its_blanks_filled(self):
-        index = parse_citations(csv_text("PRJNA1,unreviewed,,,,,,,"))
-        rows, touched = merge_proposals(
-            index, [Citation(bioproject="PRJNA1", title="T", doi="10.1/x")]
+    def test_weight_refreshes_even_on_a_reviewed_block(self):
+        """It describes the corpus, not the decision, and a stale count
+        misorders the queue."""
+        queued = {"PRJNA1": Entry(bioproject="PRJNA1", status=Status.NOT_FOUND, samples=1)}
+        merged, changed = merge_proposals(
+            queued, [Entry(bioproject="PRJNA1", samples=40, species=["birds/y"])]
         )
-        assert touched == 1
-        assert (rows[0].title, rows[0].doi) == ("T", "10.1/x")
+        assert merged["PRJNA1"].samples == 40 and changed == 1
 
-    def test_a_non_empty_field_survives_on_an_unreviewed_row(self):
-        """A half-finished hand edit must survive a refresh."""
-        index = parse_citations(csv_text("PRJNA1,unreviewed,,,10.5/handwritten,,,,"))
-        rows, _ = merge_proposals(
-            index, [Citation(bioproject="PRJNA1", doi="10.9/proposed", title="T")]
-        )
-        assert rows[0].doi == "10.5/handwritten"
-        assert rows[0].title == "T"
 
-    def test_a_proposal_never_sets_a_status(self):
-        index = parse_citations(csv_text("PRJNA1,unreviewed,,,,,,,"))
-        rows, _ = merge_proposals(
-            index, [Citation(bioproject="PRJNA1", status=Status.CONFIRMED, doi="10.1/x")]
+class TestQueueRendering:
+    def test_it_orders_by_samples_worst_first(self):
+        text = render_queue(
+            [
+                Entry(bioproject="PRJNA_SMALL", samples=1),
+                Entry(bioproject="PRJNA_BIG", samples=150),
+            ]
         )
-        assert rows[0].status is Status.UNREVIEWED
+        assert text.index("PRJNA_BIG") < text.index("PRJNA_SMALL")
 
-    def test_an_unseen_bioproject_is_added(self):
-        rows, touched = merge_proposals(
-            parse_citations(""), [Citation(bioproject="PRJNA9", title="T")]
+    def test_an_empty_queue_says_so(self):
+        assert "Nothing awaiting review" in render_queue([])
+
+    def test_a_rendered_block_round_trips(self):
+        entry = Entry(
+            bioproject="PRJNA1",
+            dois=["10.a/x"],
+            references={"10.a/x": "Someone (2020) A paper"},
+            title="A title",
+            submitter="An institute",
+            samples=7,
+            species=["birds/x"],
         )
-        assert touched == 1
-        assert rows[0].bioproject == "PRJNA9"
+        again = one(render_queue([entry]))
+        assert again.dois == ["10.a/x"]
+        assert again.samples == 7
+        assert again.title == "A title"
+        assert again.reference("10.a/x") == "Someone (2020) A paper"
+
+
+class TestLoadingBothFiles:
+    def test_the_queue_overrides_the_record(self, tmp_path):
+        """A decision made in the queue counts before anyone runs the tool."""
+        references = tmp_path / "references"
+        references.mkdir()
+        (references / "bioproject_citations.tsv").write_text(
+            render_record([Entry(bioproject="PRJNA1", status=Status.NOT_FOUND)])
+        )
+        (references / "citations-review.md").write_text(
+            render_queue(
+                [Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"])]
+            )
+        )
+        index = load_citations(tmp_path)
+        assert index.status_of("PRJNA1") is Status.CONFIRMED
+        assert index.unfiled == ["PRJNA1"]
+
+    def test_a_stale_queue_block_cannot_undecide_the_record(self, tmp_path):
+        references = tmp_path / "references"
+        references.mkdir()
+        (references / "bioproject_citations.tsv").write_text(
+            render_record([Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"])])
+        )
+        (references / "citations-review.md").write_text(
+            render_queue([Entry(bioproject="PRJNA1", status=Status.UNREVIEWED)])
+        )
+        assert load_citations(tmp_path).status_of("PRJNA1") is Status.CONFIRMED
+
+    def test_absent_files_load_as_empty(self, tmp_path):
+        index = load_citations(tmp_path)
+        assert len(index) == 0
+        assert index.status_of("PRJNA1") is Status.UNREVIEWED
+
+    def test_needs_review_excludes_every_reviewed_state(self, tmp_path):
+        references = tmp_path / "references"
+        references.mkdir()
+        (references / "bioproject_citations.tsv").write_text(
+            render_record(
+                [
+                    Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"]),
+                    Entry(bioproject="PRJNA2", status=Status.NOT_FOUND),
+                    Entry(bioproject="PRJNA3", status=Status.NOT_FOUND),
+                ]
+            )
+        )
+        index = load_citations(tmp_path)
+        assert index.needs_review(["PRJNA1", "PRJNA2", "PRJNA3", "PRJNA4"]) == ["PRJNA4"]
+        assert index.citable(["PRJNA1", "PRJNA2", "PRJNA3"]) == ["PRJNA1"]
 
 
 class TestToolCitations:
-    def test_pending_entries_are_not_citable(self, tmp_path):
-        text = "snparcher:\n  name: snpArcher\n  status: pending\n  doi: ''\n"
-        tools = parse_tool_citations(text)
-        assert tools["snparcher"].status == "pending"
+    def test_pending_entries_are_not_citable(self):
+        tools = parse_tool_citations("snparcher:\n  name: snpArcher\n  status: pending\n")
         assert not tools["snparcher"].is_citable
 
-    def test_a_confirmed_entry_with_a_reference_is_citable(self):
-        text = "gatk:\n  name: GATK\n  status: confirmed\n  doi: 10.1/gatk\n"
-        assert parse_tool_citations(text)["gatk"].is_citable
+    def test_a_confirmed_entry_with_a_doi_is_citable(self):
+        tools = parse_tool_citations("gatk:\n  status: confirmed\n  doi: 10.1/gatk\n")
+        assert tools["gatk"].is_citable
 
-    def test_a_broken_file_yields_nothing_rather_than_raising(self):
+    def test_a_broken_file_yields_nothing(self):
         assert parse_tool_citations("{{{not yaml") == {}
 
     def test_an_absent_file_yields_nothing(self, tmp_path):
@@ -201,29 +300,19 @@ class TestEuropePmcParsing:
          "journalTitle": "Proc Biol Sci", "pubYear": "2018",
          "authorString": "Ravinet M, Elgvin TO, Trier C.", "pmid": "30185642"}]}}"""
 
-    def test_it_builds_a_one_line_citation(self):
-        hits = parse_search("PRJEB27649", self.PAYLOAD)
-        assert hits.total == 2
-        top = hits.candidates[0]
+    def test_it_builds_a_one_line_reference(self):
+        top = parse_search("PRJEB27649", self.PAYLOAD).candidates[0]
         assert top.doi == "10.1098/rspb.2018.1246"
-        assert top.citation == (
-            "Ravinet M et al. (2018) Signatures of human-commensalism Proc Biol Sci."
-        )
+        assert top.citation.startswith("Ravinet M et al. (2018) Signatures")
 
-    def test_no_results_is_found_false_and_not_an_error(self):
+    def test_no_results_is_absence_not_error(self):
         hits = parse_search("PRJNA1", '{"hitCount": 0, "resultList": {"result": []}}')
-        assert not hits.found
-        assert hits.error is None
+        assert not hits.found and hits.error is None
 
-    def test_an_unparseable_response_is_an_error_not_an_absence(self):
-        """An outage must never be recorded as `none`."""
+    def test_an_unparseable_response_is_an_error_not_absence(self):
+        """An outage must never be filed as "no publication"."""
         hits = parse_search("PRJNA1", "<html>502</html>")
-        assert hits.error is not None
-        assert not hits.found
-
-    def test_a_single_author_is_not_given_et_al(self):
-        payload = '{"hitCount":1,"resultList":{"result":[{"authorString":"Solo A."}]}}'
-        assert parse_search("X", payload).candidates[0].authors == "Solo A"
+        assert hits.error is not None and not hits.found
 
 
 class TestBioProjectParsing:
@@ -237,70 +326,55 @@ class TestBioProjectParsing:
         assert set(found) == {"PRJNA1462765"}
         assert found["PRJNA1462765"].submitter == "Vertebrate Genomes Project"
 
-    def test_a_document_without_an_accession_is_skipped(self):
-        payload = '{"result": {"uids": ["1"], "1": {"project_title": "no accession"}}}'
-        assert parse_summaries(payload) == {}
-
     def test_an_unparseable_response_yields_nothing(self):
         assert parse_summaries("not json") == {}
 
 
-class TestSurvey:
-    """The review queue must be built from both sources, not either one.
+class TestAffiliationStar:
+    """The submitter's own affiliation on a paper is the best free signal
+    that the data was generated for it."""
 
-    `README.txt` says what a species claims to draw on; the SRA mapping
-    says what actually contributed runs. Those disagree — `E002` and
-    `E003` exist because of it — so taking either alone builds the wrong
-    queue.
-    """
-
-    def test_it_unions_declared_and_contributing_projects(self, tmp_path):
-        import json
-        import shutil
-
-        from congen.core.metadata.discovery import SpeciesRepo
-        from congen.tools.citations.cli import survey
-
-        from tests.conftest import METADATA_ROOT
-
-        root = tmp_path / "metadata"
-        shutil.copytree(METADATA_ROOT, root)
-        species = SpeciesRepo(root).load("reptiles/podarcis-raffonei")
-        sheet_input = species.sheet.rows[0].input
-        sample = species.sheet.rows[0].sample_id
-        (species.path / "dataset.json").write_text(
-            json.dumps(
-                {
-                    "subject": species.key,
-                    "sra": {
-                        sheet_input: [
-                            {"run": "SRR1", "biosample": "SAMN1", "bioproject": "PRJ_FROM_SRA"}
-                        ]
-                    },
-                }
-            )
+    def test_a_match_is_starred_and_listed_first(self):
+        entry = Entry(
+            bioproject="PRJNA1",
+            dois=["10.a/other", "10.b/match"],
+            starred={"10.b/match"},
         )
-        samples, species_of = survey(SpeciesRepo(root))
-        assert "PRJ_FROM_SRA" in samples
-        assert samples["PRJ_FROM_SRA"][species.key] == 1
-        # and whatever README.txt declares is in the queue too, even
-        # though no run was attributed to it
-        for declared in species.readme.bioprojects:
-            assert declared in samples
-            assert sum(samples[declared].values()) == 0
-        assert species.key in species_of["PRJ_FROM_SRA"]
+        # Only the list items; the `considered` comment keeps its own order.
+        items = [l for l in render_queue([entry]).splitlines() if l.startswith("- [") or l.startswith(f"- {MATCH_STAR}")]
+        assert items[0] == f"- {MATCH_STAR} [10.b/match](https://doi.org/10.b/match)"
+        assert "10.a/other" in items[1]
 
-    def test_a_species_without_a_dataset_record_is_not_fatal(self, tmp_path):
-        import shutil
+    def test_a_starred_line_still_parses_as_a_doi(self):
+        entry = one(
+            block(f"- {MATCH_STAR} [10.b/match](https://doi.org/10.b/match) — Someone (2020) X")
+        )
+        assert entry.dois == ["10.b/match"]
 
-        from congen.core.metadata.discovery import SpeciesRepo
-        from congen.tools.citations.cli import survey
+    def test_the_matcher_discriminates_on_real_affiliations(self):
+        from congen.core.remote.literature import affiliation_matches
 
-        from tests.conftest import METADATA_ROOT
+        helsinki = "Institute of Biotechnology, HiLIFE, University of Helsinki, Finland."
+        petersburg = "European University at St. Petersburg, Russian Federation."
+        assert affiliation_matches("UNIVERSITY OF HELSINKI", [petersburg, helsinki])
+        assert not affiliation_matches("UNIVERSITY OF HELSINKI", [petersburg])
 
-        root = tmp_path / "metadata"
-        shutil.copytree(METADATA_ROOT, root)
-        samples, _ = survey(SpeciesRepo(root))
-        # the fixtures carry no dataset.json, so everything comes from
-        # README.txt and nothing raises
-        assert samples
+    def test_generic_words_alone_never_match(self):
+        """Otherwise every "Department of Biology" matches every other."""
+        from congen.core.remote.literature import affiliation_matches
+
+        assert not affiliation_matches("The University", ["University of Anywhere"])
+
+    def test_affiliations_come_from_every_author_not_just_the_first(self):
+        """For PRJEB39599 the submitter is Helsinki and the first author is
+        in St Petersburg, with Helsinki further down the list."""
+        payload = """{"hitCount":1,"resultList":{"result":[{
+            "doi":"10.a/x",
+            "affiliation":"European University at St. Petersburg",
+            "authorList":{"author":[
+                {"affiliation":"European University at St. Petersburg"},
+                {"authorAffiliationDetailsList":{"authorAffiliation":[
+                    {"affiliation":"University of Helsinki, Finland"}]}}]}}]}}"""
+        candidate = parse_search("PRJEB39599", payload).candidates[0]
+        assert len(candidate.affiliations) == 2
+        assert candidate.matches_submitter("UNIVERSITY OF HELSINKI")

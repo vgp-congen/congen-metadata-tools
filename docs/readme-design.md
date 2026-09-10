@@ -772,16 +772,108 @@ render deterministic and offline, and it makes the gaps visible and countable.
 Corpus-wide files live in `congen-metadata/references/` alongside
 `vgp_reference_genomes.csv`, which is exactly where core already owns access.
 
-### Three states, and why `none` is load-bearing
+### The review surface — rebuilt, twice
+
+The first attempt was a 298-row CSV with a status column and one `doi`
+column. **It failed on contact with a reviewer**, and the ways it failed
+are worth recording because each was a design error rather than a bug:
+
+- It sorted alphabetically by accession, so the 150-sample project was
+  buried at row 200 and the order carried no information.
+- Two of nine columns (`reviewed_by`, `reviewed_on`) were empty in all
+  298 rows. Git already records who and when.
+- One `doi` column could not express a BioProject with two papers.
+- **79 rows had multiple search candidates and only the top one was
+  stored**, so a quarter of the evidence was unreachable.
+- Nothing showed samples affected or which species, which is the only
+  thing that decides whether a row is worth a reviewer's time.
+
+The diagnosis: three things with different lifecycles had been merged into
+one file. *Evidence* is machine-generated, regenerable and bulky.
+*Decisions* are human-authored, tiny and precious. The *reading surface*
+is neither.
+
+**Reviewing is deletion.** The fastest thing a human can do is click a
+DOI, skim, and delete the lines that are wrong — and editing a file in
+GitHub's web editor makes each such edit a commit, so the decision and
+its provenance land together. Checkboxes were considered and ruled out on
+a fact: task-list checkboxes are read-only in repository markdown files,
+interactive only in issues and pull requests.
+
+So: **one rule, and every line is a claim.** Delete the ones that are not
+true. `NOT YET REVIEWED` is itself a claim, which is what makes it the
+single bit distinguishing a decision from an untouched block — no status
+field anywhere.
+
+**Two files, because a queue you must scan past settled work is not a
+queue.** `citations-review.md` holds only what needs a human and empties
+as the work is done; `bioproject_citations.tsv` is the settled record.
+The loader reads both and the queue wins, so a decision counts the moment
+it is committed — running `--collect` to file it is housekeeping, not a
+correctness step.
+
+### One not-found state, not two
+
+A draft split "no publication" into `YET` (provisional) and `EXPECTED`
+(permanent). **Both halves were wrong.**
+
+Whether a paper is *coming* is a claim about the submitter's intentions,
+and we are almost never the submitter — so `EXPECTED` asked a reviewer
+for something they cannot know. And it was unnecessary: the evidence
+trigger already stops the queue nagging, because a BioProject with no
+candidates has nothing unseen to show. Worse, `EXPECTED` would have
+suppressed the one notification worth having — a paper appearing for a
+project someone had written off.
+
+`NO PUBLICATION FOUND` says only what was searched for and not seen,
+which is ours to say.
+
+**`confirmed` is final; `not_found` reopens on new evidence.** A later
+search hit on the same BioProject is usually data *reuse*, and reuse
+needs no credit, so reopening a confirmed entry would offer a citation
+nobody should add. The genuine two-paper case is rare and is handled at
+review time, when both candidates are already on screen.
+
+The trigger is **evidence, not elapsed time** — the same reason the
+validator makes staleness a property of the inputs rather than of the
+calendar. A calendar rule would either nag about hopeless cases or sit on
+a paper that appeared yesterday. Making that decidable needs one
+addition: an invisible `<!-- considered: ... -->` line recording every DOI
+a reviewer was shown, so `rejected = considered − kept`. Deleting list
+items never disturbs it, and the record stores both sides, so a reopened
+block never re-offers something already turned down.
+
+### Affiliation matching earns the ★
+
+A candidate whose author affiliations include the BioProject's submitting
+organisation gets a `★` and is listed first. It is a proxy for "generated
+by the same people", and it is the strongest signal available for free.
+
+It must read **every author's** affiliation, not the top-level
+`affiliation` field: for `PRJEB39599` the submitter is Helsinki and the
+first author is in St Petersburg, with Helsinki further down the list.
+
+Labelled as *the affiliation matches the submitter* and never as *this is
+the right paper*, because the match is a hint. `genetics` survives the
+generic-token stoplist and would match any genetics department, so a
+false positive must cost a reviewer one glance rather than produce a
+wrong citation.
+
+Measured over the corpus: 166 matches across the 182 BioProjects that had
+any candidate, and **95 blocks have exactly one starred candidate** —
+skim it and keep the line. 30 have several, 57 have candidates with none
+starred, and 116 have no candidates at all.
+
+### Three states, and why the not-found state is load-bearing
 
 `references/bioproject_citations.csv` carries per bioproject: accession, title,
 submitter, status, DOI, citation, `reviewed_by`, `reviewed_on`.
 
-| Status | Means | Re-proposed? |
+| Status | Means | Reopens? |
 |---|---|---|
-| `confirmed` | a human accepted this DOI | no |
-| `none` | a human looked; there is no citable paper | **no** |
-| `unreviewed` | nobody has looked | yes |
+| `confirmed` | a reviewer kept at least one DOI | **no** — a later hit is usually reuse |
+| `not_found` | searched; nothing found | on new evidence only |
+| `unreviewed` | `NOT YET REVIEWED` still present | it is already in the queue |
 
 Without the `none` / `unreviewed` split, every refresh re-proposes the same
 cases forever and the review queue never empties — and on the probe's hit rate
@@ -791,39 +883,25 @@ distinction `G017` and `G018` drew, for the same reason.
 ### The workflow
 
 ```bash
-congen citations --propose     # network: Europe PMC + NCBI esummary → staging file
-                               # human edits references/bioproject_citations.csv
-congen citations --report      # offline: the gaps, ranked by samples affected
-congen readme                  # offline: joins against the curated file
+congen citations --propose    # network: look up newly-seen BioProjects
+                              # review by deleting lines; commit
+congen citations --collect    # offline: file decided blocks into the record
+congen citations --report     # offline: progress, and what remains
 ```
 
-#### `--propose` writes into the curated file — a reversal
+Each command has one job. `--propose` never decides anything and never
+touches the record; `--collect` never looks anything up; `--report` writes
+nothing. `--propose` skips a `confirmed` entry entirely and skips a queued
+block that already has candidates, so a review in progress is never
+disturbed.
 
-An earlier draft had `--propose` write a staging file it owned, so a tool could
-never touch a human decision. **Reversed once the corpus was measured.** With 298
-bioprojects, a staging file means a reviewer copying rows between two 298-row
-CSVs for no benefit, and the guard that actually matters is enforceable directly.
-Two rules, both tested:
-
-1. A row whose status is `confirmed` or `none` is **never touched**. A human
-   ruled on it, and a lookup is not entitled to reopen that — which is what makes
-   `none` durable rather than a state the next refresh overwrites.
-2. On an `unreviewed` row a proposal fills **empty fields only**, so a
-   half-finished hand edit survives a refresh.
-
-A proposal never sets a status. Every row stays `unreviewed` until a human
-changes it, so the tool proposes and cannot decide.
-
-It fetches the project title and submitter from `esummary` alongside each
-candidate, so a bioproject with no publication still gets a human-readable line
-rather than a bare accession. That pays for itself immediately: `PRJNA1462765` is
-titled "…bDryPub1, **seq**" and the `README.txt` cites "…bDryPub1, **pri**", so a
-reviewer can see the `E002`/`E003` mistake without leaving the file.
-
-`--report` is the review queue: bioproject, status, species, samples affected,
-worst-first. Sample-level attribution needs tier 5's `RunIndex` — the ~85s
-corpus-wide call — which is why the run → bioproject mapping is committed into
-`dataset.json`.
+**The queue is heavily front-loaded, and `--report` says so.** 24
+decisions cover 50% of the 3,473 attributed samples, 59 cover 75%, 105
+cover 90% — and 118 of the 298 BioProjects carry a single sample each.
+Since an unreviewed BioProject blocks nothing (gate B is about whether
+the *list* is correct, not whether a paper was found), the tail is
+genuinely optional work, and a reviewer deserves to know that before
+facing a queue of 298.
 
 ### Gate B is about the list, not the papers
 

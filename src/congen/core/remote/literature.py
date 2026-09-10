@@ -21,6 +21,7 @@ the candidates to a staging file for a human to accept or reject.
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 from dataclasses import dataclass, field
 
@@ -37,6 +38,44 @@ NAMESPACE = "europepmc-accession"
 MAX_CANDIDATES = 5
 
 
+#: Words too common in an institution name to carry any signal. Dropping
+#: them is what lets "The University of Colorado" match "Department of
+#: Ecology and Evolutionary Biology, University of Colorado, Boulder".
+GENERIC_TOKENS = frozenset(
+    """a an and the of for at de del della di und der des
+    university universite universitat universidad universita college school
+    faculty department dept division institute institut instituto center
+    centre centro laboratory laboratories lab unit group programme program
+    research sciences science studies national state federal royal
+    academy academia foundation trust hospital museum ltd inc gmbh
+    """.split()
+)
+
+#: A token has to be at least this long to count as distinctive.
+MIN_TOKEN = 4
+
+
+def _tokens(text: str) -> set[str]:
+    words = re.split(r"[^a-z]+", text.lower())
+    return {w for w in words if len(w) >= MIN_TOKEN and w not in GENERIC_TOKENS}
+
+
+def affiliation_matches(submitter: str, affiliations) -> bool:
+    """Whether any affiliation looks like the BioProject's submitter.
+
+    Every distinctive token of the submitter must appear. Deliberately a
+    weak hint rather than a verdict: "genetics" survives the stoplist and
+    would match any genetics department, so the queue labels this as
+    *the affiliation matches the submitter* — which is exactly what was
+    checked — and never as *this is the right paper*. A false positive
+    then costs a reviewer one glance, not a wrong citation.
+    """
+    wanted = _tokens(submitter)
+    if not wanted:
+        return False
+    return any(wanted <= _tokens(affiliation) for affiliation in affiliations)
+
+
 @dataclass(frozen=True)
 class Candidate:
     doi: str = ""
@@ -45,6 +84,14 @@ class Candidate:
     year: str = ""
     authors: str = ""
     pmid: str = ""
+    #: Every author's affiliation, not just the first author's. For
+    #: `PRJEB39599` the submitter is Helsinki and the first author is in
+    #: St Petersburg, with Helsinki further down the list — so reading
+    #: only the top-level `affiliation` field would miss the match.
+    affiliations: tuple[str, ...] = ()
+
+    def matches_submitter(self, submitter: str) -> bool:
+        return affiliation_matches(submitter, self.affiliations)
 
     @property
     def citation(self) -> str:
@@ -72,6 +119,22 @@ class AccessionHits:
         return bool(self.candidates)
 
 
+def _affiliations(payload: dict) -> tuple[str, ...]:
+    found: list[str] = []
+    if payload.get("affiliation"):
+        found.append(str(payload["affiliation"]))
+    for author in (payload.get("authorList") or {}).get("author") or []:
+        if author.get("affiliation"):
+            found.append(str(author["affiliation"]))
+        details = (author.get("authorAffiliationDetailsList") or {}).get(
+            "authorAffiliation"
+        ) or []
+        for detail in details:
+            if detail.get("affiliation"):
+                found.append(str(detail["affiliation"]))
+    return tuple(dict.fromkeys(found))
+
+
 def _first_author(payload: dict) -> str:
     authors = payload.get("authorString") or ""
     if not authors:
@@ -94,6 +157,7 @@ def parse_search(accession: str, text: str) -> AccessionHits:
             year=str(item.get("pubYear") or ""),
             authors=_first_author(item),
             pmid=str(item.get("pmid") or ""),
+            affiliations=_affiliations(item),
         )
         for item in results[:MAX_CANDIDATES]
     )
