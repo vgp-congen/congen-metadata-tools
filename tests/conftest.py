@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from congen.core.cache import ENV_CACHE_DIR
+
 FIXTURES = Path(__file__).parent / "fixtures"
 METADATA_ROOT = FIXTURES / "metadata"
 REMOTE = FIXTURES / "remote"
@@ -19,6 +21,22 @@ REMOTE = FIXTURES / "remote"
 #: Fixture header prefixes are 16 KiB, so readers must be told not to ask
 #: for more than exists.
 FIXTURE_WINDOW = 16 * 1024
+
+
+@pytest.fixture(autouse=True)
+def isolated_cache(tmp_path_factory, monkeypatch):
+    """Point every test at a throwaway cache directory.
+
+    Autouse, and not optional. Without it a test that exercises a remote
+    client writes into the developer's real `~/.cache/congen` and a later
+    test reads it back — which is how `--verify`'s outage test came to
+    pass a cache hit instead of the timeout it was asserting, and exited
+    0 where it expected 1. Tests that share hidden state with the machine
+    they run on are not tests.
+    """
+    monkeypatch.setenv(
+        ENV_CACHE_DIR, str(tmp_path_factory.mktemp("congen-cache"))
+    )
 
 
 @pytest.fixture

@@ -10,6 +10,8 @@ import pytest
 
 from congen.core.metadata.citations import (
     MATCH_STAR,
+    QUEUE_FILE,
+    RECORD_FILE,
     NOT_FOUND_MARKER,
     UNREVIEWED_MARKER,
     Entry,
@@ -214,29 +216,47 @@ class TestQueueRendering:
     def test_a_rendered_block_round_trips(self):
         entry = Entry(
             bioproject="PRJNA1",
-            dois=["10.a/x"],
+            dois=["10.a/x", "10.b/starred"],
             references={"10.a/x": "Someone (2020) A paper"},
+            starred={"10.b/starred"},
             title="A title",
             submitter="An institute",
             samples=7,
             species=["birds/x"],
         )
         again = one(render_queue([entry]))
-        assert again.dois == ["10.a/x"]
+        assert set(again.dois) == {"10.a/x", "10.b/starred"}
         assert again.samples == 7
         assert again.title == "A title"
         assert again.reference("10.a/x") == "Someone (2020) A paper"
+        # The star has to survive, because every rewrite of the queue goes
+        # through parse -> render. Without this assertion a single
+        # `--collect` silently stripped all 166 stars from the committed
+        # queue, and the test above still passed.
+        assert again.starred == {"10.b/starred"}
+
+    def test_a_collect_style_rewrite_keeps_every_star(self):
+        """The specific regression: rewriting the queue must preserve stars."""
+        entries = [
+            Entry(bioproject="PRJNA1", dois=["10.a/x"], starred={"10.a/x"}),
+            Entry(bioproject="PRJNA2", dois=["10.b/y"], starred={"10.b/y"}),
+        ]
+        once = render_queue(entries)
+        parsed, _ = parse_queue(once)
+        twice = render_queue(parsed.values())
+        assert once.count(f"- {MATCH_STAR} ") == 2
+        assert twice.count(f"- {MATCH_STAR} ") == 2
 
 
 class TestLoadingBothFiles:
     def test_the_queue_overrides_the_record(self, tmp_path):
         """A decision made in the queue counts before anyone runs the tool."""
-        references = tmp_path / "references"
-        references.mkdir()
-        (references / "bioproject_citations.tsv").write_text(
+        root = tmp_path
+        (root / "references").mkdir(exist_ok=True)
+        (root / RECORD_FILE).write_text(
             render_record([Entry(bioproject="PRJNA1", status=Status.NOT_FOUND)])
         )
-        (references / "citations-review.md").write_text(
+        (root / QUEUE_FILE).write_text(
             render_queue(
                 [Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"])]
             )
@@ -246,12 +266,12 @@ class TestLoadingBothFiles:
         assert index.unfiled == ["PRJNA1"]
 
     def test_a_stale_queue_block_cannot_undecide_the_record(self, tmp_path):
-        references = tmp_path / "references"
-        references.mkdir()
-        (references / "bioproject_citations.tsv").write_text(
+        root = tmp_path
+        (root / "references").mkdir(exist_ok=True)
+        (root / RECORD_FILE).write_text(
             render_record([Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"])])
         )
-        (references / "citations-review.md").write_text(
+        (root / QUEUE_FILE).write_text(
             render_queue([Entry(bioproject="PRJNA1", status=Status.UNREVIEWED)])
         )
         assert load_citations(tmp_path).status_of("PRJNA1") is Status.CONFIRMED
@@ -262,9 +282,9 @@ class TestLoadingBothFiles:
         assert index.status_of("PRJNA1") is Status.UNREVIEWED
 
     def test_needs_review_excludes_every_reviewed_state(self, tmp_path):
-        references = tmp_path / "references"
-        references.mkdir()
-        (references / "bioproject_citations.tsv").write_text(
+        root = tmp_path
+        (root / "references").mkdir(exist_ok=True)
+        (root / RECORD_FILE).write_text(
             render_record(
                 [
                     Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"]),
@@ -378,3 +398,197 @@ class TestAffiliationStar:
         candidate = parse_search("PRJEB39599", payload).candidates[0]
         assert len(candidate.affiliations) == 2
         assert candidate.matches_submitter("UNIVERSITY OF HELSINKI")
+
+
+class TestVerifyCli:
+    """`--verify` guards against the typo the review mechanic invites.
+
+    A reviewer types DOIs by hand, and nothing else in this toolchain can
+    see a wrong one: a capital O for a zero looks fine in a diff and
+    would put a dead link in 79 documents.
+    """
+
+    def _repo(self, tmp_path, entries):
+        import shutil
+
+        from congen.core.metadata.citations import RECORD_FILE
+        from tests.conftest import METADATA_ROOT
+
+        root = tmp_path / "metadata"
+        shutil.copytree(METADATA_ROOT, root)
+        (root / RECORD_FILE).parent.mkdir(parents=True, exist_ok=True)
+        (root / RECORD_FILE).write_text(render_record(entries))
+        return root
+
+    def _run(self, root, monkeypatch, responder):
+        from click.testing import CliRunner
+
+        from congen.core import http
+        from congen.core.cli import main
+
+        monkeypatch.setattr(http, "request", responder)
+        return CliRunner().invoke(
+            main, ["citations", "--verify", "--metadata-root", str(root)]
+        )
+
+    PAYLOAD = b'{"title": "A paper", "container-title": "J", "issued": {"date-parts": [[2020]]}, "author": [{"given": "A B", "family": "Author"}]}'
+
+    def test_a_resolving_doi_is_marked_verified_and_gets_its_reference(
+        self, tmp_path, monkeypatch
+    ):
+        from congen.core.metadata.citations import RECORD_FILE, parse_record
+
+        root = self._repo(
+            tmp_path,
+            [Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"])],
+        )
+
+        def ok(url, **kwargs):
+            from congen.core import http
+
+            return http.Response(url=url, status=200, body=self.PAYLOAD, headers={})
+
+        result = self._run(root, monkeypatch, ok)
+        assert result.exit_code == 0
+        entry = parse_record((root / RECORD_FILE).read_text())["PRJNA1"]
+        assert entry.verified == {"10.a/x"}
+        assert entry.reference("10.a/x") == "Author AB (2020) A paper J."
+
+    def test_a_bad_doi_exits_non_zero_and_names_it(self, tmp_path, monkeypatch):
+        root = self._repo(
+            tmp_path,
+            [Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/typo"])],
+        )
+
+        def not_found(url, **kwargs):
+            from congen.core import http
+
+            raise http.HttpError(url, 404, "Not Found")
+
+        result = self._run(root, monkeypatch, not_found)
+        assert result.exit_code == 1
+        assert "do not resolve" in result.output
+        assert "10.a/typo" in result.output
+
+    def test_an_outage_writes_nothing(self, tmp_path, monkeypatch):
+        """A verdict nobody managed to reach must not be recorded."""
+        from congen.core.metadata.citations import RECORD_FILE, parse_record
+
+        root = self._repo(
+            tmp_path,
+            [Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"])],
+        )
+        before = (root / RECORD_FILE).read_text()
+
+        def unreachable(url, **kwargs):
+            raise TimeoutError("doi.org is down")
+
+        result = self._run(root, monkeypatch, unreachable)
+        assert result.exit_code == 1
+        assert "not written" in result.output
+        assert (root / RECORD_FILE).read_text() == before
+        assert parse_record(before)["PRJNA1"].verified == set()
+
+    def test_an_already_verified_doi_is_not_checked_again(self, tmp_path, monkeypatch):
+        """One request per new citation, not 300 per run."""
+        root = self._repo(
+            tmp_path,
+            [
+                Entry(
+                    bioproject="PRJNA1",
+                    status=Status.CONFIRMED,
+                    dois=["10.a/x"],
+                    references={"10.a/x": "Already known"},
+                    verified={"10.a/x"},
+                )
+            ],
+        )
+
+        def refuse(url, **kwargs):
+            raise AssertionError("should not have been asked")
+
+        result = self._run(root, monkeypatch, refuse)
+        assert result.exit_code == 0
+        assert "already verified" in result.output
+
+    def test_an_existing_reference_is_not_overwritten(self, tmp_path, monkeypatch):
+        """A reference a human wrote is not ours to replace."""
+        from congen.core.metadata.citations import RECORD_FILE, parse_record
+
+        root = self._repo(
+            tmp_path,
+            [
+                Entry(
+                    bioproject="PRJNA1",
+                    status=Status.CONFIRMED,
+                    dois=["10.a/x"],
+                    references={"10.a/x": "Hand-written, and better"},
+                )
+            ],
+        )
+
+        def ok(url, **kwargs):
+            from congen.core import http
+
+            return http.Response(url=url, status=200, body=self.PAYLOAD, headers={})
+
+        self._run(root, monkeypatch, ok)
+        entry = parse_record((root / RECORD_FILE).read_text())["PRJNA1"]
+        assert entry.reference("10.a/x") == "Hand-written, and better"
+        assert entry.verified == {"10.a/x"}
+
+
+class TestFilingTwice:
+    """The record knows things the queue cannot, and must not lose them."""
+
+    def _filed(self):
+        from congen.core.metadata.citations import merge_into_record
+
+        return merge_into_record, Entry(
+            bioproject="PRJNA1",
+            status=Status.CONFIRMED,
+            dois=["10.a/x", "10.b/y"],
+            references={"10.a/x": "Fetched reference", "10.b/y": "Another"},
+            verified={"10.a/x", "10.b/y"},
+            rejected=["10.old/one"],
+            title="From the record",
+        )
+
+    def test_verification_survives_a_second_filing(self):
+        merge, existing = self._filed()
+        again = Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x", "10.b/y"])
+        merged = merge(existing, again)
+        assert merged.verified == {"10.a/x", "10.b/y"}
+        assert merged.reference("10.a/x") == "Fetched reference"
+
+    def test_a_doi_no_longer_accepted_loses_its_verification(self):
+        """The queue owns the decision, so a removed DOI is simply gone."""
+        merge, existing = self._filed()
+        again = Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"])
+        merged = merge(existing, again)
+        assert merged.dois == ["10.a/x"]
+        assert merged.verified == {"10.a/x"}
+
+    def test_a_new_doi_arrives_unverified(self):
+        merge, existing = self._filed()
+        again = Entry(bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x", "10.c/new"])
+        merged = merge(existing, again)
+        assert merged.verified == {"10.a/x"}
+        assert "10.c/new" in merged.dois
+
+    def test_rejections_accumulate_across_filings(self):
+        merge, existing = self._filed()
+        again = Entry(
+            bioproject="PRJNA1", status=Status.CONFIRMED, dois=["10.a/x"], rejected=["10.new/two"]
+        )
+        assert merge(existing, again).rejected == ["10.new/two", "10.old/one"]
+
+    def test_the_queue_wins_on_status(self):
+        merge, existing = self._filed()
+        again = Entry(bioproject="PRJNA1", status=Status.NOT_FOUND)
+        assert merge(existing, again).status is Status.NOT_FOUND
+
+    def test_a_first_filing_is_unchanged(self):
+        merge, _ = self._filed()
+        fresh = Entry(bioproject="PRJNA9", status=Status.CONFIRMED, dois=["10.z/z"])
+        assert merge(None, fresh) is fresh

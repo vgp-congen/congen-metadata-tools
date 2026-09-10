@@ -24,6 +24,7 @@ from congen.core.metadata.citations import (
     Entry,
     Status,
     load_citations,
+    merge_into_record,
     merge_proposals,
     parse_queue,
     parse_record,
@@ -34,6 +35,7 @@ from congen.core.metadata.citations import (
 from congen.core.metadata.discovery import MetadataRootNotFound, SpeciesRepo
 from congen.core.metadata.writers import write_if_changed
 from congen.core.remote.bioproject import BioProjects
+from congen.core.remote.doi import Doi, DoiNotFound
 from congen.core.remote.literature import EuropePmc
 from congen.tools.readme.record import RECORD_JSON, load_record
 
@@ -93,6 +95,11 @@ def survey(repo: SpeciesRepo) -> tuple[dict[str, int], dict[str, list[str]]]:
     help="Offline: file decided blocks into the record and drop them from the queue.",
 )
 @click.option(
+    "--verify",
+    is_flag=True,
+    help="Network: check accepted DOIs resolve, and fill in their references.",
+)
+@click.option(
     "--propose",
     is_flag=True,
     help="Network: look up newly-seen BioProjects and add them to the queue.",
@@ -103,14 +110,26 @@ def citations(
     metadata_root: Path | None,
     report: bool,
     collect: bool,
+    verify: bool,
     propose: bool,
     limit: int | None,
     no_cache: bool,
 ) -> None:
     """Curate the BioProject citations the generated READMEs depend on."""
-    chosen = [name for name, on in (("--report", report), ("--collect", collect), ("--propose", propose)) if on]
+    chosen = [
+        name
+        for name, on in (
+            ("--report", report),
+            ("--collect", collect),
+            ("--verify", verify),
+            ("--propose", propose),
+        )
+        if on
+    ]
     if len(chosen) != 1:
-        click.echo("choose exactly one of --report, --collect or --propose.", err=True)
+        click.echo(
+            "choose exactly one of --report, --collect, --verify or --propose.", err=True
+        )
         sys.exit(EXIT_MISUSE)
 
     repo = _repo(metadata_root)
@@ -123,6 +142,8 @@ def citations(
         _report(repo, index, samples, species_of)
     elif collect:
         _collect(repo, index)
+    elif verify:
+        _verify(repo, no_cache=no_cache)
     else:
         _propose(repo, index, samples, species_of, limit=limit, no_cache=no_cache)
 
@@ -210,7 +231,9 @@ def _collect(repo, index) -> None:
         sys.exit(EXIT_OK)
 
     for accession, entry in sorted(decided.items()):
-        record[accession] = entry
+        # Merge, never replace: the record knows which DOIs resolve and
+        # what their references say, and the queue cannot.
+        record[accession] = merge_into_record(record.get(accession), entry)
         detail = ", ".join(entry.dois) if entry.dois else "no publication"
         click.echo(f"filed  {accession:16} {entry.status}  {detail}")
 
@@ -349,3 +372,89 @@ def _milestones(weights, remaining: int, targets=(50, 75, 90)) -> list[tuple[int
         while pending and running >= remaining * pending[0] / 100:
             out.append((pending.pop(0), index))
     return out
+
+
+def _verify(repo, *, no_cache: bool) -> None:
+    """Check every accepted DOI resolves, and fill in its reference.
+
+    Two jobs, one request each. A reviewer types DOIs by hand, and a
+    typo is invisible to everything else here — a capital O for a zero
+    looks fine in a diff and would put a dead link in 79 documents. The
+    same request that proves the DOI exists returns its title, authors
+    and journal, so a hand-typed citation gets prose instead of
+    rendering as a bare DOI.
+
+    Only unverified DOIs are checked, so this costs one request per new
+    citation rather than 300 every run.
+    """
+    try:
+        record = parse_record((repo.root / RECORD_FILE).read_text("utf-8"))
+    except (FileNotFoundError, OSError):
+        click.echo(f"no record at {repo.root / RECORD_FILE}", err=True)
+        sys.exit(EXIT_MISUSE)
+
+    pending = [
+        (accession, doi)
+        for accession, entry in sorted(record.items())
+        for doi in entry.dois
+        if doi not in entry.verified
+    ]
+    if not pending:
+        total = sum(len(e.dois) for e in record.values())
+        click.echo(f"all {total} accepted DOI(s) already verified")
+        sys.exit(EXIT_OK)
+
+    resolver = Doi(Cache(enabled=not no_cache))
+    bad: list[tuple[str, str]] = []
+    outages: list[tuple[str, str]] = []
+    filled = 0
+
+    for accession, doi in pending:
+        entry = record[accession]
+        try:
+            work = resolver.resolve(doi)
+        except DoiNotFound:
+            bad.append((accession, doi))
+            click.echo(f"BAD   {accession:16} {doi}  does not resolve")
+            continue
+        except Exception as exc:  # noqa: BLE001 - an outage is not a verdict
+            outages.append((accession, doi))
+            click.echo(f"?     {accession:16} {doi}  lookup failed: {exc}")
+            continue
+        entry.verified.add(doi)
+        # Only fill a blank. A reference a human wrote, or one Europe PMC
+        # supplied, is not ours to overwrite.
+        if not entry.reference(doi) and work.reference:
+            entry.references[doi] = work.reference
+            filled += 1
+        click.echo(f"ok    {accession:16} {doi}  {work.reference[:70]}")
+
+    if outages:
+        # Never record a verdict nobody managed to reach.
+        click.echo("", err=True)
+        click.echo(
+            f"{len(outages)} lookup(s) failed, so the record was not written. "
+            "Re-run when doi.org is reachable; results are cached.",
+            err=True,
+        )
+        sys.exit(EXIT_PROBLEM)
+
+    wrote = write_if_changed(repo.root / RECORD_FILE, render_record(record.values()))
+    click.echo("")
+    click.echo(
+        f"{len(pending)} checked · {len(pending) - len(bad)} resolved · "
+        f"{len(bad)} did not · {filled} reference(s) filled in"
+    )
+    click.echo(f"record {'updated' if wrote else 'unchanged'}")
+
+    if bad:
+        click.echo("", err=True)
+        click.echo(
+            f"{len(bad)} DOI(s) do not resolve. Most likely a typo — fix them in "
+            f"{RECORD_FILE} or put the BioProject back in the queue:",
+            err=True,
+        )
+        for accession, doi in bad:
+            click.echo(f"  {accession}: {doi}", err=True)
+        sys.exit(EXIT_PROBLEM)
+    sys.exit(EXIT_OK)

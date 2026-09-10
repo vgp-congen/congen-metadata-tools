@@ -11,17 +11,22 @@ shared architecture and `congen validate`;
 
 ## Status
 
-`congen validate` is complete: tiers 0, 1, 2, 3a, 3b and 4 over one species or
-the whole corpus, plus tier 5 behind `--check-sra`, and validation reports
-written into `congen-metadata`.
+Three tools, all built.
 
-`congen readme` and `congen citations` are **designed but not built**. See
-[`docs/readme-design.md`](docs/readme-design.md); work starts at Phase 0, a
-one-species vertical slice.
+| Tool | What it does | Writes |
+|---|---|---|
+| `congen validate` | cross-checks the metadata against GenomeArk. 44 checks over tiers 0–4, plus tier 5 behind `--check-sra`, and `G020`/`G021` at corpus level | validation reports, behind `--write-reports` |
+| `congen readme` | harvests GenomeArk, NCBI, the QC tables and SRA into `dataset.json`, then renders a `README.md` per species | `dataset.json`, `README.md` |
+| `congen citations` | proposes publication citations for contributing BioProjects, and files the ones a human accepts | the review queue and the citation record |
+
+Every generated file is **idempotent**: regenerating without an input change
+writes nothing. That is what makes the automatic rebuild in `congen-metadata`
+readable — without it every push produced a 160-file diff of nothing but
+timestamps.
 
 | Module | What it does |
 |---|---|
-| `congen.core.http` | ranged GET with retry/backoff |
+| `congen.core.http` | ranged GET with retry/backoff, per-host rate limits |
 | `congen.core.cache` | ETag-aware JSON disk cache |
 | `congen.core.findings` | severities, findings, the check registry |
 | `congen.core.status` | publication state: absent / partial / complete |
@@ -29,38 +34,58 @@ one-species vertical slice.
 | `congen.core.report` | human / JSON / GitHub-annotation renderers |
 | `congen.core.metadata` | tolerant loaders, models, species discovery, VGP list |
 | `congen.core.metadata.writers` | round-trip YAML, managed blocks, atomic writes |
+| `congen.core.metadata.citations` | the citation review queue and settled record |
 | `congen.core.remote.headers` | VCF/BAM headers over HTTP Range, no htslib |
 | `congen.core.remote.genomeark` | anonymous S3 listing, zarr-aware |
 | `congen.core.remote.ncbi` | NCBI Datasets metadata and assembly reports |
-| `congen.core.remote.qc` | snpArcher QC tables (`contig_map.tsv` so far) |
+| `congen.core.remote.bioproject` | NCBI BioProject titles and submitters |
+| `congen.core.remote.qc` | snpArcher QC and callable-sites tables |
 | `congen.core.remote.sra` | NCBI SRA runinfo, batched and rate-limited |
-| `congen.tools.validate` | 44 registered checks across tiers 0, 1, 2, 3a, 3b, 4 and 5, plus `G020`/`G021` at corpus level |
+| `congen.core.remote.literature` | Europe PMC accession search |
+| `congen.core.remote.doi` | doi.org resolution, for typo-checking hand-typed DOIs |
 
-Not yet built:
-
-| | Status |
-|---|---|
-| `congen readme` | designed — [`docs/readme-design.md`](docs/readme-design.md), Phases 0–5 |
-| `congen citations` | designed — same document, Phase 4 |
-| `core.remote.qc` coverage tables | designed — Phase 1; only `contig_map.tsv` exists today |
-| `core.remote.literature` | designed — Phase 4, Europe PMC |
-| CI workflows | deferred — validator milestone 7 / readme Phase 6 |
+Not yet built: the References block of the generated README, which will render
+the curated citations rather than a placeholder. See
+[`docs/readme-design.md`](docs/readme-design.md), phase 5.
 
 ## Usage
 
+### Generating documents
+
 ```bash
-congen validate reptiles/podarcis-raffonei   # one species
-congen validate --all                        # the whole corpus, ~16s
-congen validate --list-checks                # the catalog
-congen validate --all --json report.json --strict
-congen validate --all --check-sra              # + NCBI SRA cross-checks (tier 5)
+congen readme --all --check     # offline: is any README.md out of date?
+congen readme --all             # offline: rewrite them
+congen readme --refresh --all   # network: re-harvest into dataset.json
+congen readme --gate-report     # offline: which species render fully, and why not
 ```
+
+The network pass and the render are separate commands on purpose, so the
+offline one runs in a job with no egress at all. `--refresh` never renders and
+a bare `readme` never fetches.
+
+A README is rendered **in full** only when there is a complete, error-free
+dataset to describe; otherwise it is truncated to a heading and a verdict. Its
+References block is withheld separately, when the BioProject list is missing or
+known to be wrong. See `docs/readme-design.md`.
+
+### Citations
+
+```bash
+congen citations --report    # offline: progress, and what is left
+congen citations --propose   # network: look up newly-seen BioProjects
+congen citations --verify    # network: check accepted DOIs resolve
+congen citations --collect   # offline: file decided blocks into the record
+```
+
+Review by editing `references/citations-review.md` and **deleting the lines
+that are not true** — every line in it is a claim. Editing that file on GitHub
+makes each decision a commit.
 
 ### Validation reports
 
 `--write-reports` writes `VALIDATION.md` and `validation.json` into each species
-directory, and a `VALIDATION.md` table at the repo root. This is the only part of
-the tool that writes to congen-metadata; without the flag it is read-only.
+directory, and a `VALIDATION.md` table at the repo root. Without the flag
+`validate` is read-only.
 
 ```bash
 congen validate --all   --write-reports --check-sra   # force: revalidate everything
@@ -73,6 +98,11 @@ A validation is a claim about specific inputs, so a report records SHA-256
 digests of the metadata it validated and the S3 ETags of the data. Staleness is
 then a pure function of the current files — content, not mtimes, because git does
 not preserve mtimes.
+
+A verdict that has not changed keeps the date it was established, so
+re-validating writes nothing. `validated_at` means *when this verdict was
+reached*, not *when we last looked* — which is also what the design doc always
+claimed a validation was.
 
 Tier 5 is opt-in: it is the only tier whose cost scales with sample count rather
 than species count. Set `NCBI_API_KEY` to raise the eutils rate cap from 3/s to
@@ -126,10 +156,27 @@ python3 -m venv ~/.virtualenvs/congen && ~/.virtualenvs/congen/bin/pip install -
 
 ```
 src/congen/
-  core/          shared: access to congen-metadata and GenomeArk
-  tools/         one subpackage per tool, registered via entry points
+  core/          shared: access to congen-metadata, GenomeArk, NCBI, Europe PMC
+  tools/         validate/ readme/ citations/, registered via entry points
 tests/
-  fixtures/      real metadata files and 16 KiB header prefixes
+  fixtures/      real metadata files, 16 KiB header prefixes, golden documents
 ```
 
-Core owns *access* to the two data sources; tools own *interpretation*.
+Core owns *access* to the data sources; tools own *interpretation*.
+
+## What lands in congen-metadata
+
+| File | Written by | Hand-edited? |
+|---|---|---|
+| `VALIDATION.md`, `validation.json` | `validate --write-reports` | no |
+| `CHECKS.md` | `validate --write-reports` | no |
+| `dataset.json` | `readme --refresh` | no |
+| `README.md` | `readme` | only below the `congen:end` marker |
+| `references/citations-review.md` | `citations --propose`/`--collect` | **yes — this is the review surface** |
+| `references/bioproject_citations.json` | `citations --collect`/`--verify` | no |
+| `references/tool_citations.yaml` | nobody | **yes** |
+
+A push to `congen-metadata` that touches source data rebuilds all of the "no"
+rows automatically; see that repository's `.github/workflows/rebuild.yml`. It
+pins a tagged version of this package, so a renderer change arrives there as a
+deliberate bump rather than overnight.

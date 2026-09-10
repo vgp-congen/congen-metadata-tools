@@ -47,6 +47,7 @@ candidates are rendered first.
 from __future__ import annotations
 
 import enum
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,7 +55,7 @@ from pathlib import Path
 from congen.core.metadata.models import LoadIssue
 
 QUEUE_FILE = Path("references") / "citations-review.md"
-RECORD_FILE = Path("references") / "bioproject_citations.tsv"
+RECORD_FILE = Path("references") / "bioproject_citations.json"
 TOOLS_FILE = Path("references") / "tool_citations.yaml"
 
 UNREVIEWED_MARKER = "NOT YET REVIEWED"
@@ -86,12 +87,26 @@ CONSIDERED_PREFIX = "<!-- considered:"
 NCBI_BIOPROJECT = "https://www.ncbi.nlm.nih.gov/bioproject/"
 DOI_URL = "https://doi.org/"
 
-RECORD_COLUMNS = ("bioproject", "status", "dois", "rejected", "reference", "title")
+#: The record is JSON, not a table.
+#:
+#: A BioProject can have several accepted DOIs, each with its own
+#: reference text and its own verification state — and flat columns
+#: cannot hold that. `PRJNA323498` already has three accepted DOIs
+#: against a single `reference` column, so the table was lossy the day
+#: it was written. This is the same failure that killed the original
+#: review CSV, one level down.
+#:
+#: Hand-readability is not a cost here: the record is machine-written and
+#: the queue is the human surface.
 
 _HEADING = re.compile(r"^##\s+(?P<accession>PRJ[A-Z]{2}\d+)\b")
 #: A DOI in a markdown link, or bare so a reviewer can paste one in.
+#: The star is **captured**, not merely tolerated. Every rewrite of the
+#: queue goes through parse -> render, so a star the parser discards is a
+#: star the next `--collect` deletes. That is exactly what happened: one
+#: `--collect` stripped all 166 of them from the committed queue.
 _DOI_LINE = re.compile(
-    rf"^-\s+(?:{MATCH_STAR}\s*)?(?:\[(?P<linked>10\.[^\]]+)\]|(?P<bare>10\.\S+))"
+    rf"^-\s+(?P<star>{MATCH_STAR})?\s*(?:\[(?P<linked>10\.[^\]]+)\]|(?P<bare>10\.\S+))"
 )
 _MARKER_LINE = re.compile(
     rf"^-\s+(?P<marker>{UNREVIEWED_MARKER}|{NOT_FOUND_MARKER})\b"
@@ -147,6 +162,10 @@ class Entry:
     considered: list[str] = field(default_factory=list)
     #: DOIs whose affiliations match the submitter. Presentation only.
     starred: set[str] = field(default_factory=set)
+    #: DOIs confirmed to resolve through doi.org. Tracked per DOI so
+    #: `--verify` checks each one once rather than re-checking 300 every
+    #: run, and so a reviewer's hand-typed typo is caught exactly once.
+    verified: set[str] = field(default_factory=set)
     #: Weight, so the queue explains its own order.
     samples: int = 0
     species: list[str] = field(default_factory=list)
@@ -209,49 +228,66 @@ class CitationIndex:
 
 
 def parse_record(text: str, path: Path | None = None) -> dict[str, Entry]:
+    """Read the settled record. Tolerant: a malformed entry is skipped."""
+    try:
+        payload = json.loads(text) if text.strip() else {}
+    except json.JSONDecodeError:
+        return {}
     out: dict[str, Entry] = {}
-    lines = [line for line in text.replace("\r\n", "\n").split("\n") if line.strip()]
-    for line in lines:
-        if line.startswith("#") or line.startswith("bioproject\t"):
-            continue
-        cells = line.split("\t")
-        cells += [""] * (len(RECORD_COLUMNS) - len(cells))
-        accession, raw_status, raw_dois, raw_rejected, reference, title = cells[:6]
-        accession = accession.strip()
-        if not accession:
+    for accession, body in (payload.items() if hasattr(payload, "items") else ()):
+        if not hasattr(body, "get"):
             continue
         try:
-            status = Status(raw_status.strip())
+            status = Status(str(body.get("status") or ""))
         except ValueError:
             continue
-        dois = [d.strip() for d in raw_dois.split(";") if d.strip()]
-        out[accession] = Entry(
-            bioproject=accession,
+        entry = Entry(
+            bioproject=str(accession),
             status=status,
-            dois=dois,
-            rejected=[d.strip() for d in raw_rejected.split(";") if d.strip()],
-            references={dois[0]: reference.strip()} if dois and reference.strip() else {},
-            title=title.strip(),
+            title=str(body.get("title") or ""),
+            submitter=str(body.get("submitter") or ""),
+            rejected=[str(d) for d in body.get("rejected") or []],
         )
+        for citation in body.get("citations") or []:
+            if not hasattr(citation, "get"):
+                continue
+            doi = str(citation.get("doi") or "").strip()
+            if not doi:
+                continue
+            entry.dois.append(doi)
+            reference = str(citation.get("reference") or "")
+            if reference:
+                entry.references[doi] = reference
+            if citation.get("verified"):
+                entry.verified.add(doi)
+        out[str(accession)] = entry
     return out
 
 
 def render_record(entries) -> str:
-    rows = ["\t".join(RECORD_COLUMNS)]
+    payload = {}
     for entry in sorted(entries, key=lambda e: e.bioproject):
-        rows.append(
-            "\t".join(
-                (
-                    entry.bioproject,
-                    entry.status.value,
-                    ";".join(entry.dois),
-                    ";".join(entry.rejected),
-                    entry.best_reference.replace("\t", " "),
-                    entry.title.replace("\t", " "),
-                )
-            )
-        )
-    return "\n".join(rows) + "\n"
+        body = {"status": entry.status.value}
+        if entry.title:
+            body["title"] = entry.title
+        if entry.submitter:
+            body["submitter"] = entry.submitter
+        if entry.dois:
+            body["citations"] = [
+                {
+                    "doi": doi,
+                    "reference": entry.reference(doi),
+                    "verified": doi in entry.verified,
+                }
+                for doi in entry.dois
+            ]
+        if entry.rejected:
+            body["rejected"] = list(entry.rejected)
+        payload[entry.bioproject] = body
+    # ensure_ascii=False so a title keeps its real characters. Crossref
+    # returns typographic hyphens and accented names, and escaping them
+    # makes a file people occasionally read much harder to scan.
+    return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 # -- the queue --------------------------------------------------------------
@@ -331,6 +367,8 @@ def parse_queue(text: str, path: Path | None = None) -> tuple[dict[str, Entry], 
             if doi not in current.dois:
                 current.dois.append(doi)
             current.references[doi] = _reference_text(line)
+            if found.group("star"):
+                current.starred.add(doi)
             continue
 
         if line and not line.startswith(("-", "#", "<!--", "|")):
@@ -598,3 +636,40 @@ def reopen(entry: Entry, dois) -> Entry | None:
     # Spans old and new, so a second rejection is remembered too.
     revived.considered = list(dict.fromkeys(entry.rejected + unseen))
     return revived
+
+
+def merge_into_record(existing: Entry | None, decided: Entry) -> Entry:
+    """Fold a decided queue block into whatever the record already holds.
+
+    The queue owns the decision — which DOIs are accepted — but the
+    record owns what has been *learned* about them: whether each DOI
+    resolves, and the reference text `--verify` fetched. Replacing
+    wholesale discards that, which is what happened the first time a
+    block was filed twice: four verifications and three references gone,
+    silently.
+
+    So the queue wins on the decision and the record wins on everything
+    it knows that the queue cannot.
+    """
+    if existing is None:
+        return decided
+    merged = Entry(
+        bioproject=decided.bioproject,
+        status=decided.status,
+        dois=list(decided.dois),
+        title=decided.title or existing.title,
+        submitter=decided.submitter or existing.submitter,
+        # A DOI rejected once stays rejected, so a later search does not
+        # re-offer it.
+        rejected=sorted(set(existing.rejected) | set(decided.rejected)),
+        samples=decided.samples,
+        species=list(decided.species),
+        starred=set(decided.starred),
+    )
+    for doi in merged.dois:
+        reference = decided.reference(doi) or existing.reference(doi)
+        if reference:
+            merged.references[doi] = reference
+        if doi in existing.verified:
+            merged.verified.add(doi)
+    return merged
