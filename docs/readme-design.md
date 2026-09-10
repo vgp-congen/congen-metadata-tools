@@ -26,6 +26,9 @@ not restated here.
 | GenomeArk browse links | none exist; the links block **is** the index | no browse UI covers `downstream_analyses/` — see Part 3 |
 | Citations source | curated file in the repo | live lookup resolves 8% and cannot be hand-corrected |
 | Failure rendering | two document modes, one gated block | no per-block graceful degradation |
+| Block order | Validation, Description, Sample QC, References, Getting the data | the download block is the longest and least interesting first |
+| Supplementary facts | rendered only when they deviate; suppressed ones go to `<details>` | ten description rows buried the five that vary — see Part 1 |
+| Download block scope | 4 primary artifacts + `bams/`; the rest collapsed | sixteen equal-weight rows is an index nobody scans |
 
 Three of these reverse the sketch in Part 3 of the validator design:
 `remote/literature.py` is no longer called by this tool (Part 4), the document
@@ -34,19 +37,29 @@ the file GitHub renders (Part 1).
 
 ## Part 1 — What the document is
 
-### Five blocks
+### Five blocks, in this order
 
-| # | Block | Answers |
-|---|---|---|
-| 1 | Validation | can I trust this? |
-| 2 | Description | what is it — species, reference, pipeline, samples? |
-| 3 | Links | how do I get it? |
-| 4 | Sample stats | what does the QC say? |
-| 5 | References | how do I cite it, and whom do I credit? |
+| Block | Answers |
+|---|---|
+| Validation | can I trust this? |
+| Description | what is it — species, reference, caller, samples? |
+| Sample QC | what does the QC say? |
+| References | how do I cite it, and whom do I credit? |
+| Getting the data | how do I fetch it? |
 
-Block 1 comes first because it is the gate, but the species name and one-line
-description sit above it: the file reads as a document with a gate, not a gate
-with a document attached.
+Validation comes first because it is the gate, but the species name and a
+one-line description sit above it: the file reads as a document with a gate, not
+a gate with a document attached.
+
+**Getting the data comes last**, settled from the Phase 0 render. It is the
+longest block and the least interesting to someone deciding whether this dataset
+is the one they want — describe it, show its quality, say how to credit it, and
+only then explain how to pull 193 GiB of BAMs.
+
+That ordering also reassigns responsibility: because Sample QC now precedes it,
+**the QC block links the tables it summarizes inline** rather than deferring to
+the download block. Those files are kilobytes, and a reader of that section wants
+them right there. Getting the data is then purely about bulk retrieval.
 
 ### The file is `README.md` — settled
 
@@ -84,6 +97,32 @@ A truncated document must not be *poorer* than the `README.txt` beside it. Since
 `README.md` is now what GitHub renders, a truncated file that omitted the
 pointers would show a reader less than the plain-text file next to it.
 
+### A supplementary fact earns a row only when it deviates
+
+The Phase 0 render started with a ten-row description table, and the extra five
+rows were all facts that are the same for every species in the corpus. Stating
+them buries the five that vary.
+
+So: **a supplementary fact is rendered only when it departs from what is
+expected, and then it is flagged.** Applied in three places so far:
+
+| Fact | Silent when | Rendered when |
+|---|---|---|
+| VGP main haplotype | the reference is canonical | it is not — naming what VGP lists instead |
+| Ploidy | 2 | anything else |
+| Sheet / BAM / VCF sample counts | all three agree | they disagree — the `anser-albifrons` case |
+
+The quiet cases say nothing; the anomalies are the loudest thing on the page.
+This is the same instinct as the validator's split between findings and status,
+one level down: a fact that never varies is inventory, and inventory does not
+belong in the reader's way.
+
+Two consequences. Facts that are suppressed but were still fetched go into a
+collapsed `<details>` block rather than being discarded — they cost a network
+call and none of them is wrong. And **the document's shape now varies by
+species**, so the golden-file suite needs a quiet fixture and an anomalous one,
+not just one of each mode.
+
 ### The two gates
 
 Two independent preconditions, because they are different questions with
@@ -102,7 +141,7 @@ Gate B — is the provenance chain sound?
 
 **Gate A failure truncates the document.** It means *do not use this data*.
 
-**Gate B failure blocks block 5 only.** It means *do not publish on this yet*.
+**Gate B failure blocks the References block only.** It means *do not publish on this yet*.
 
 The split is the findings/status split from the validator doing useful work:
 severity measures metadata hygiene, `status.state` measures whether a dataset
@@ -138,6 +177,17 @@ This is not hypothetical, and it fails in two distinct ways today:
   reports were last written, not a guarantee. Under a naive "no provenance
   findings fired" test, a plain `congen validate --all --write-reports` would
   silently promote all 13 citation-blocked species to fully cited documents.
+
+  **Observed in Phase 1, and the staleness machinery actively invites it.**
+  `catalog_digest` fingerprints the checks *selected for a run*, so
+  `congen validate --stale` without `--check-sra` compares a 41-check catalog
+  against the 44-check one the reports were written with, and reports **every
+  species in the corpus** as needing revalidation with the reason "the check
+  catalog changed". The obvious way to clear that is
+  `--stale --write-reports` — which, still without `--check-sra`, rewrites all
+  79 records with tier 5 skipped. One forgotten flag, and gate B's "ran and
+  passed" rule is the only thing between that and 13 species quietly gaining
+  unverified citations.
 - **`R020` is skipped 22 times.** It `needs` the README, and 22 species have no
   repo `README.txt`. Every one of those findings is `skipped`, not `warn` — the
   check fires as a warning on nothing in the whole corpus. Reading that as a pass
@@ -266,7 +316,7 @@ Under that rule it spans five remote sources:
 
 | Source | Contributes |
 |---|---|
-| S3 listing | object names, sizes, ETags, the resolved accession |
+| S3 listing | object names, sizes, ETags, the resolved accession, and **`opaque_subdirs`** — the prefixes under `callable_sites/` that are never enumerated, so no total can silently understate them |
 | QC tables | `qc_report.tsv`, `individuals.het`, `individuals.imiss`, `coverage_thresholds.tsv` |
 | VCF/BAM headers (ranged GET) | recorded caller version, ploidy, het prior, contig list |
 | NCBI | organism name, common name, assembly name and level, paired accession |
@@ -342,7 +392,7 @@ needs no digest machinery of its own.
 
 ## Part 3 — The blocks
 
-### 1 — Validation
+### Validation
 
 Reads `validation.json`. **Does not re-run validation.**
 
@@ -381,7 +431,7 @@ existing pattern.
 Not doing: shields.io badges. An external image, needing a hosted endpoint, and
 the only thing in the file that would not be self-contained.
 
-### 2 — Description
+### Description
 
 | Field | Source |
 |---|---|
@@ -408,65 +458,7 @@ older, scaffold-level assembly entirely.
 The variant-site count is free: `individuals.imiss` carries `N_DATA`, which is
 31,253,369 for *Apteryx mantelli*.
 
-### 3 — Links
-
-Base is
-`s3://genomeark/downstream_analyses/conservation_genomics/variant_calling/{RESOLVED_ACCESSION}/`,
-built from the **resolved** accession.
-
-An inventory table — artifact, path, object count, size — from the S3 listing,
-because the sizes are what tell a reader what to do. For *Apteryx mantelli* the
-raw VCF is 3.95 GiB and the BAMs are 193 GiB across 38 objects.
-
-Three access modes, because they suit different needs and people guess wrong:
-
-```bash
-aws s3 sync --no-sign-request s3://genomeark/.../bams/ ./bams/
-curl -O https://genomeark.s3.amazonaws.com/.../vcfs/raw.vcf.gz
-bcftools view -r chr1:1-100000 https://genomeark.s3.amazonaws.com/.../vcfs/raw.vcf.gz
-```
-
-The third earns its place: most people asking how to get a 4 GiB VCF should be
-doing a ranged read, not a download.
-
-Two things the block must say that are not obvious:
-
-- **`--no-sign-request`.** The bucket is anonymous, and an `aws s3` call without
-  it fails confusingly for anyone with credentials configured.
-- **Do not recursively sync `callable_sites/`.** It holds zarr stores — 3,264
-  objects for one species. Give an `--exclude '*.zarr/*'` recipe. The listing code
-  already refuses to descend there; humans deserve the same warning.
-
-#### There is no browse UI, so this block is the index — settled
-
-GenomeArk's web browser does not cover `downstream_analyses/`, and the
-alternatives are all worse than nothing: the S3 REST listing renders as raw XML
-in a browser, and the AWS console's bucket browser requires a login, which
-defeats the point of an anonymous bucket.
-
-So the links block is not a supplement to a browse UI — **it replaces one**, and
-that raises its bar. Every object a human would plausibly open gets its own row
-with a direct HTTPS link:
-
-```
-README.txt · sample_sheet.csv
-vcfs/raw.vcf.gz · .tbi · filtered.vcf.gz · .tbi (where present)
-qc/qc_dashboard.html · qc_report.tsv · individuals.{idepth,het,imiss,samps.txt} · contig_map.tsv
-callable_sites/callable_sites.bed · coverage.bed · mappability.bed · coverage_thresholds.tsv
-```
-
-Roughly sixteen rows. Everything else is rolled up into a directory row with an
-object count and a total size: `bams/` (38 objects, 193 GiB for *Apteryx
-mantelli*), the remaining `qc/` plink outputs, and `callable_sites/`'s zarr
-stores. Nobody deep-links a `plink.bim`, and enumerating 3,264 zarr chunks would
-be absurd.
-
-URLs use `S3Object.url` — `https://genomeark.s3.amazonaws.com/{key}` — so the
-document and the listing code cannot disagree about the form. Verified: the
-bucket serves objects anonymously over HTTPS with usable content types, so
-`qc_dashboard.html` opens as a rendered page rather than downloading.
-
-### 4 — Sample stats
+### Sample QC
 
 The QC directory is richer than the validator design's table suggested.
 Verified against `GCA_036417845.1`:
@@ -481,6 +473,11 @@ Verified against `GCA_036417845.1`:
 | `qc/qc_dashboard.html` | the dashboard — 8.6 MiB, served as `text/html`, so a plain link opens in a browser |
 
 **Link the dashboard, never fetch it.**
+
+**This block links its own sources.** The dashboard, `qc_report.tsv`,
+`individuals.het`, `individuals.imiss` and `coverage_thresholds.tsv` are cited
+inline where each is discussed, not deferred to the download block — they are
+kilobytes, and someone reading a summary of them wants the originals to hand.
 
 #### There are two coverages and they disagree — settled
 
@@ -579,7 +576,7 @@ This design's only obligation to it is not to prejudge it: `remote/qc.py` will
 have parsed every table that conversation needs, and no threshold chosen by this
 tool will be sitting in the corpus when it happens.
 
-### 5 — References
+### References
 
 Rendered only when gate B passes. Four parts:
 
@@ -608,6 +605,90 @@ absurd.
 6 bioprojects)*. Measured in **samples, not bioprojects** — one unreviewed
 project contributing 40 samples matters far more than one contributing 1. This is
 the number that gets gaps filled.
+
+### Getting the data
+
+Base is
+`s3://genomeark/downstream_analyses/conservation_genomics/variant_calling/{RESOLVED_ACCESSION}/`,
+built from the **resolved** accession.
+
+#### There is no browse UI, so this block is the index — settled
+
+GenomeArk's web browser does not cover `downstream_analyses/`, and the
+alternatives are all worse than nothing: the S3 REST listing renders as raw XML
+in a browser, and the AWS console's bucket browser requires a login, which
+defeats the point of an anonymous bucket.
+
+So this block is not a supplement to a browse UI — **it replaces one**. An
+earlier draft concluded that therefore every file a human might open should get
+its own row, roughly sixteen of them. **The Phase 0 render disproved that.**
+Sixteen rows of near-equal weight is an index nobody scans, and it buries the
+three or four artifacts people actually come for.
+
+#### Primary, secondary, absent
+
+**Primary** — one row each, with size and a one-line description:
+
+```
+vcfs/raw.vcf.gz · .tbi          the calls
+vcfs/filtered.vcf.gz · .tbi     where the run produced them
+callable_sites/callable_sites.bed   the mask
+qc/qc_dashboard.html            the QC report, opens in a browser
+bams/                           one directory row: total size and object count
+```
+
+**Secondary** — the QC tables, the mask components, `contig_map.tsv`,
+`mappability.bedgraph` — in a collapsed `<details>`, and linked *from the QC
+block* where they are actually discussed.
+
+**Excluded entirely**: the GenomeArk copies of `README.txt` and
+`sample_sheet.csv`. Both duplicate a file already sitting in the species
+directory, and the S3 sheet is explicitly not ground truth — `S006` exists
+because it can disagree with the repo copy. Linking it as though it were
+authoritative would be worse than not linking it.
+
+**Absent** is stated, not silently omitted: *"This run did not produce
+`filtered.vcf.gz`."* Indexes are folded into their parent rather than named
+separately.
+
+#### Sizes are a lower bound, and the document must say so
+
+The Phase 0 render first claimed *"the whole dataset is 199.4 GiB across 78
+objects"*, which is false. The `callable_sites/` listing is delimiter-based, so
+the zarr stores come back as prefixes and their contents are never enumerated —
+by design, since one species' `callable_loci.zarr/` runs to thousands of objects.
+
+Any total is therefore a lower bound. `dataset.json` records the opaque
+prefixes by name (`opaque_subdirs`), and the block states the exclusion
+explicitly rather than implying a total it does not have.
+
+#### Recipes
+
+```bash
+bcftools view -r <chr>:<start>-<end> https://genomeark.s3.amazonaws.com/.../vcfs/raw.vcf.gz
+aws s3 sync --no-sign-request s3://genomeark/.../bams/ ./bams/
+aws s3 sync --no-sign-request --exclude '*.zarr/*' s3://genomeark/.../callable_sites/ ./
+```
+
+The ranged read leads, because most people asking how to get a 4 GiB VCF should
+not be downloading it. Two non-obvious things the block must say:
+
+- **`--no-sign-request`.** The bucket is anonymous, and an `aws s3` call without
+  it fails confusingly for anyone with credentials configured.
+- **Never recursively sync `callable_sites/`** without the `--exclude`. The
+  listing code already refuses to descend there; humans deserve the same warning.
+
+#### Link definitions live at the foot, tagged by path
+
+The shared S3 prefix is 100 characters. Inline links made every table row
+unreadable in source and unreviewable in a diff, so the block emits
+reference-style links and the renderer collects the definitions at the end of the
+document. **The tag is the object's path** — `[qc/qc_report.tsv]: …` — not a
+serial number, so the definition list is self-documenting and a diff on it says
+which file changed.
+
+This is why a block returns `(lines, refs)` rather than lines: any block can cite
+any file, and only the renderer knows where the definitions go. See Part 5.
 
 ## Part 4 — Citations
 
@@ -720,6 +801,17 @@ rather than GenomeArk.
 | `metadata/writers.py` | no change needed — `ManagedBlock`, `render_managed_blocks`, `managed_block_names`, `atomic_write`, `would_change`, `write_if_changed` all already exist |
 
 ### Markers: one managed region, not five
+
+#### The block contract
+
+A block is a plain function returning `(lines, refs)`: the markdown, and the
+reference-style link definitions it used. Only the renderer knows where
+definitions go — the foot of the document — and any block may cite any published
+file, so collecting them centrally is the only arrangement that works. The
+reference tag is the object's path, which keeps the definition list legible.
+
+Blocks have no `needs` declaration and no skip states; the gates decide what gets
+rendered, so a block that runs at all has its inputs.
 
 **One managed block, not five.** The generated body — every block, in both modes
 — sits inside a single `<!-- congen:begin body -->` …
@@ -844,13 +936,27 @@ usefulness of the stats block, how complete the manifest should be — and
 badly if the schema is frozen before the document that consumes it exists, so a
 throwaway-tolerant vertical slice comes first.
 
-**Phase 0 — vertical slice, one species.** End to end for
-`birds/apteryx-mantelli` (PASS, complete, 19 samples, every QC table present, two
-bioprojects): minimal QC parsing, minimal harvest, gate, blocks 1–4. Hardcode
-freely; this phase is allowed to be ugly and its output goes to a scratch
-directory, not to `congen-metadata`. **Exit criterion: a rendered document to
-react to** — the links table, the histogram at n=19, and whether the whole thing
-earns its length. Nothing downstream is frozen until one exists.
+**Phase 0 — vertical slice, one species. Done.** End to end for
+`birds/apteryx-mantelli`, output to a scratch directory. It cost **12 HTTP
+requests on a cold cache** — 5 S3 listings, 5 QC tables, 1 ranged VCF-header
+read, 1 NCBI call — so a corpus harvest is ~950 requests, in the same range as
+`congen validate`. No core change was needed to build it, which is the boundary
+holding.
+
+Four things it settled that reasoning had not:
+
+- The `callable_sites/` size is structurally a lower bound, and the first render
+  stated a false total. `opaque_subdirs` exists in the schema because of this.
+- Sixteen equal-weight link rows is worse than four plus a `<details>`.
+- Supplementary facts need the deviation rule, or the description table is ten
+  rows of which five never vary.
+- Blocks must return `(lines, refs)`: the 100-character shared S3 prefix makes
+  inline links unreviewable in a diff.
+
+Two API notes for later phases: `SpeciesRepo.vgp_list` is a property, and
+`VcfHeader.callers()` / `tool_versions()` are methods. `callers()` is the one to
+use for the caller row — `bcftools 1.23.1` appears beside `gatk 4.6.2.0` in the
+header, and reading `tool_versions()` naively labels bcftools a variant caller.
 
 **Phase 1 — freeze the harvest schema.** `remote/qc.py` parsers for all five
 tables with fixtures; `harvest.py`; the `dataset.json` schema — five remote
@@ -865,7 +971,7 @@ rendering exists** — 53 full / 13 citations-blocked / 13 truncated over all 79
 real `validation.json` records, with the per-species reason lists. Retires the
 correctness-of-claim risk at zero rendering cost.
 
-**Phase 3 — the renderer.** Blocks 1–4, the single managed region, the mode
+**Phase 3 — the renderer.** Every block but References, the single managed region, the mode
 transition, `--check`, `--json`, variadic targets, exit codes, and the full test
 discipline below. Settles the manifest question from three real scales:
 `apteryx-mantelli` (19 samples), `esox-lucius` (65), `taeniopygia-guttata` (232).
@@ -873,7 +979,7 @@ The 79 documents are committed here rather than held back until citations land �
 the repository is private, and collaborators reviewing work in progress and
 finding errors is worth more than avoiding a second corpus-wide diff.
 
-Block 5 is **omitted at this phase, not stubbed with a gate-B warning** — the
+References is **omitted at this phase, not stubbed with a gate-B warning** — the
 bioproject list is not broken for these species, the tool simply does not do
 citations yet, and rendering the blocked wording would state a false reason.
 Because these documents are being committed for review, the omission carries one
@@ -884,7 +990,7 @@ References section must not conclude that citations were dropped by design.
 `--propose` over Europe PMC through `core.http`, `--report`. From here, curating
 208 rows is human work that proceeds in parallel with Phase 5.
 
-**Phase 5 — block 5.** Joins the curated file: the bioproject table, the two
+**Phase 5 — the References block.** Joins the curated file: the bioproject table, the two
 blocked renderings, the coverage line, the pending assembly entry.
 
 **Phase 6 — CI workflows.** Shared with the validator's deferred milestone 7.
@@ -909,17 +1015,16 @@ Neither of these blocks any phase.
 - **The citable reference for a VGP reference assembly.** Most likely the VGP
   flagship paper; not decided. Held at `status: pending` in
   `tool_citations.yaml`, which is one row and one render branch when the answer
-  arrives. See Part 3, block 5.
+  arrives. See Part 3, References.
 - **Sample-level QC thresholds.** Part of the larger filtering and QC
-  conversation, deliberately not prejudged here. See Part 3, block 4.
+  conversation, deliberately not prejudged here. See Part 3, Sample QC.
 
 ## Open questions
 
-- **How complete should the object manifest be?** The starting point is the
-  simple one: ~16 named files with direct links, everything else rolled up into
-  directory rows. Readability is the binding constraint — a manifest nobody can
-  scan is worse than no manifest. `dataset.json` holds the full listing
-  regardless, so richer options (a collapsed `<details>` table, a sibling
-  `manifest.tsv`) cost no extra network and stay available. **Decide from rendered
-  examples, not in the abstract.** Phase 0 produces the first one and Phase 3 the
-  three scales — 19 samples, 65, 232 — before this is settled.
+- **Does the primary/secondary split hold at scale?** Phase 0 settled the shape
+  at n=19: four primary rows, `bams/` as one directory row, ten secondary files
+  collapsed. The object *inventory* does not grow with sample count — only
+  `bams/` does, and it is already a single row — so the split should hold at
+  n=232. Worth confirming against `esox-lucius` (65) and `taeniopygia-guttata`
+  (232) in Phase 3, along with whether the two `<details>` blocks still feel
+  right once collaborators have read a few.

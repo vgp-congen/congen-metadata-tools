@@ -223,6 +223,26 @@ class GenomeArk:
         listing = self.list(f"{self.base_prefix}/")
         return [name for name in listing.subdirs if name.startswith("GC")]
 
+    def resolve_accession(self, declared: str | None, counterpart: str | None = None) -> str | None:
+        """Find the accession the data actually sits under.
+
+        Tries what the config declares, then its GCA/GCF counterpart —
+        the case `grus-americana` presents, where the config says GCF and
+        GenomeArk publishes under GCA.
+
+        In core rather than in a tool because *where the data is* is a
+        question about access, and both `validate` and `readme` have to
+        answer it identically or they will describe different datasets.
+        """
+        if not declared:
+            return None
+        published = set(self.accessions())
+        if declared in published:
+            return declared
+        if counterpart and counterpart in published:
+            return counterpart
+        return None
+
     def inventory(self, accession: str) -> AccessionInventory:
         """Inventory one accession, skipping opaque subdirectories."""
         prefix = self.accession_prefix(accession)

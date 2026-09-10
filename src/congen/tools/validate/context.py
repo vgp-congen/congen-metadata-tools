@@ -287,22 +287,9 @@ class ContextGatherer:
             context.available.add(CONTIG_MAP)
 
     def _resolve_accession(self, context: Context) -> str | None:
-        """Find the accession the data actually sits under.
-
-        Tries what the config declares, then its GCA/GCF counterpart —
-        the case `grus-americana` presents, where the config says GCF and
-        GenomeArk publishes under GCA.
-        """
-        declared = context.declared_accession
-        if not declared:
-            return None
-        published = set(self.genomeark.accessions())
-        if declared in published:
-            return declared
-        counterpart = context.species.reference.counterpart()
-        if counterpart and counterpart in published:
-            return counterpart
-        return None
+        return self.genomeark.resolve_accession(
+            context.declared_accession, context.species.reference.counterpart()
+        )
 
     def _gather_s3(self, context: Context, required: set[str]) -> None:
         try:
