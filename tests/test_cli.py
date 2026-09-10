@@ -325,3 +325,38 @@ class TestOrphanFindings:
 
         repo = SpeciesRepo(METADATA_ROOT)
         assert orphan_findings(repo, self._gatherer(["GCA_028858705.1"])) == []
+
+
+class TestErrorOrdering:
+    """Which error you get must not depend on where you stand.
+
+    CI found this: from inside the source tree a metadata checkout is
+    discoverable, so `validate` with no target reached the usage check
+    and exited 2; from anywhere else discovery failed first and it exited
+    1. Argument validation now precedes any I/O.
+    """
+
+    def _invoke(self, args, cwd):
+        import os
+
+        here = os.getcwd()
+        try:
+            os.chdir(cwd)
+            return CliRunner().invoke(validate, args)
+        finally:
+            os.chdir(here)
+
+    def test_no_target_is_usage_wherever_it_runs(self, tmp_path):
+        assert self._invoke([], tmp_path).exit_code == 2
+        assert self._invoke([], METADATA_ROOT).exit_code == 2
+
+    def test_an_undiscoverable_root_is_reported_when_a_target_was_given(self, tmp_path):
+        result = self._invoke(["--all"], tmp_path)
+        assert result.exit_code == 1
+        assert "no congen-metadata checkout found" in result.output
+
+    def test_the_offline_modes_still_need_a_root(self, tmp_path):
+        """--check-stale takes no target, so it must not trip the usage check."""
+        result = self._invoke(["--check-stale"], tmp_path)
+        assert result.exit_code == 1
+        assert "no congen-metadata checkout found" in result.output

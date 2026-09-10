@@ -157,6 +157,16 @@ def validate(
             click.echo(f"{check.id}  {str(check.severity):8s} {check.summary}  [needs: {needs}]")
         return
 
+    # Argument validation before any I/O. "You did not say what to
+    # validate" does not depend on finding a checkout, and checking the
+    # other way round made the exit code depend on where you stood: from
+    # inside the tree you got a usage error, from anywhere else you got
+    # "no checkout found". CI stands somewhere else, which is how it
+    # surfaced.
+    selecting_nothing = not targets and not all_species and not stale_only
+    if selecting_nothing and not (check_stale or mark_stale):
+        raise click.UsageError("give one or more species, --all, or --stale")
+
     try:
         repo = SpeciesRepo(metadata_root) if metadata_root else SpeciesRepo.discover()
     except MetadataRootNotFound as exc:
@@ -193,9 +203,6 @@ def validate(
             sys.exit(1)
         click.echo("all validation reports describe their current inputs")
         sys.exit(0)
-
-    if not targets and not all_species and not stale_only:
-        raise click.UsageError("give one or more species, --all, or --stale")
 
     stale_reasons: dict[str, str] = {}
     if stale_only:
