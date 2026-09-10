@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from congen.core.metadata.citations import CitationIndex
 from congen.core.metadata.models import SpeciesMetadata
 from congen.core.metadata.vgp import VgpReferenceList
 from congen.core.validation_record import ValidationRecord
@@ -34,6 +35,9 @@ class Context:
     verdict: Verdict
     record: ValidationRecord | None = None
     vgp: VgpReferenceList | None = None
+    #: The curated citations, read from the two files in `references/`.
+    #: Local, so rendering stays offline.
+    citations: CitationIndex | None = None
     #: Object path -> reference tag, assigned once by the renderer so a
     #: block can cite a file without knowing how it will be linked.
     refs: dict[str, str] = field(default_factory=dict)
@@ -50,6 +54,24 @@ class Context:
 
     def has(self, path: str) -> bool:
         return path in self.dataset.objects
+
+    def bioprojects(self) -> dict[str, int]:
+        """BioProject -> samples it contributed to *this* species.
+
+        The union of what `README.txt` declares and what the SRA mapping
+        attributes. When gate B passes those agree by construction, since
+        `E002`/`E003` would otherwise block the block — so the union is
+        belt-and-braces rather than a real choice. A declared project
+        that contributed no runs shows zero, which is what `E003` is.
+        """
+        counts: dict[str, int] = {}
+        for projects in self.dataset.bioprojects_by_sample(self.species.sheet).values():
+            for project in projects:
+                counts[project] = counts.get(project, 0) + 1
+        declared = self.species.readme.bioprojects if self.species.readme else []
+        for project in declared:
+            counts.setdefault(project, 0)
+        return counts
 
 
 @dataclass(frozen=True)

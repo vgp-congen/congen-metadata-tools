@@ -198,6 +198,8 @@ class CitationIndex:
     #: Decided in the queue but not yet filed into the record. Housekeeping,
     #: not an error: reviewing works without ever running the tool.
     unfiled: list[str] = field(default_factory=list)
+    #: `tool_citations.yaml`, so a renderer needs one load, not two.
+    tools: dict[str, "ToolCitation"] = field(default_factory=dict)
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -402,7 +404,7 @@ def _absorb_prose(entry: Entry, prose: list[str]) -> None:
 
 
 def load_citations(root: Path) -> CitationIndex:
-    """The record, overlaid with whatever the queue says.
+    """Everything a renderer needs about citations, from local files.
 
     The queue wins: a decision made there but not yet filed is still a
     decision, so review does not depend on anyone running the tool.
@@ -426,6 +428,7 @@ def load_citations(root: Path) -> CitationIndex:
         if entry.status.is_reviewed:
             index.unfiled.append(accession)
     index.unfiled.sort()
+    index.tools = load_tool_citations(root)
     return index
 
 

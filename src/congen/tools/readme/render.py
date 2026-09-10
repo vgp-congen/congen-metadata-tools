@@ -72,6 +72,7 @@ def build_context(
     verdict: Verdict,
     record: ValidationRecord | None,
     vgp: VgpReferenceList | None = None,
+    citations=None,
 ) -> Context:
     """Assign a reference tag to every linkable object, once.
 
@@ -87,6 +88,7 @@ def build_context(
         verdict=verdict,
         record=record,
         vgp=vgp,
+        citations=citations,
         refs=refs,
     )
 

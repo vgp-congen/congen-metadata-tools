@@ -22,6 +22,7 @@ from pathlib import Path
 import click
 
 from congen.core.cache import Cache
+from congen.core.metadata.citations import load_citations
 from congen.core.metadata.discovery import MetadataRootNotFound, SpeciesRepo
 from congen.core.metadata.writers import would_change
 from congen.core.validation_record import load_record as load_validation
@@ -150,6 +151,7 @@ def readme(
         _render(
             species,
             vgp=_repo.vgp_list,
+            citations=load_citations(_repo.root),
             output_name=output_name,
             check_only=check_only,
             json_path=json_path,
@@ -252,20 +254,28 @@ def _refresh(
 # -- the offline pass ------------------------------------------------------
 
 
-def context_for(entry, vgp=None):
+def context_for(entry, vgp=None, citations=None):
     """Assemble a render context from local files only."""
     dataset = load_record(entry.path / RECORD_JSON) or DatasetRecord(subject=entry.key)
     record = load_validation(entry.path / "validation.json")
     verdict = evaluate(entry.path, record, harvested_accession=dataset.accession)
-    return build_context(entry, dataset, verdict, record, vgp=vgp)
+    return build_context(
+        entry, dataset, verdict, record, vgp=vgp, citations=citations
+    )
 
 
 def _render(
-    species, *, vgp=None, output_name: str, check_only: bool, json_path: Path | None
+    species,
+    *,
+    vgp=None,
+    citations=None,
+    output_name: str,
+    check_only: bool,
+    json_path: Path | None,
 ) -> None:
     rows = []
     for entry in species:
-        context = context_for(entry, vgp)
+        context = context_for(entry, vgp, citations)
         path = entry.path / output_name
         did = (
             would_change_document(context, path)
@@ -345,7 +355,11 @@ def _gate_report(
     logic; this shows the numbers.
     """
     repo, species = _resolve(targets, all_species or not targets, clade, metadata_root)
-    rows = [(entry.key, context_for(entry, repo.vgp_list).verdict) for entry in species]
+    citations = load_citations(repo.root)
+    rows = [
+        (entry.key, context_for(entry, repo.vgp_list, citations).verdict)
+        for entry in species
+    ]
 
     full = [row for row in rows if row[1].is_full]
     cited = [row for row in full if row[1].cited]

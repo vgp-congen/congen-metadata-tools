@@ -250,3 +250,104 @@ class TestTruncated:
         or partial upload the comparison measures upload progress.
         """
         assert "disagree" not in render_body(truncated_context())
+
+
+class TestReferences:
+    """The block that turns "please cite them" into actual citations."""
+
+    def _context(self, entries=(), sra=None, declared=None):
+        from congen.core.metadata.citations import CitationIndex
+        from tests.conftest_readme import dataset as make_dataset
+
+        index = CitationIndex(entries={e.bioproject: e for e in entries})
+        data = make_dataset(sra=sra or {})
+        ctx = context(data=data)
+        object.__setattr__(ctx, "citations", index)
+        if declared is not None and ctx.species.readme is not None:
+            ctx.species.readme.bioprojects[:] = declared
+        return ctx
+
+    def _entry(self, accession, **kw):
+        from congen.core.metadata.citations import Entry, Status
+
+        return Entry(bioproject=accession, status=kw.pop("status", Status.CONFIRMED), **kw)
+
+    def test_a_confirmed_citation_is_rendered_with_its_doi(self):
+        from congen.tools.readme.blocks import references
+
+        entry = self._entry(
+            "PRJNA1",
+            dois=["10.a/x"],
+            references={"10.a/x": "Someone (2020) A paper. J."},
+            title="A project",
+        )
+        text = "\n".join(references.render(self._context([entry], declared=["PRJNA1"])).lines)
+        assert "Someone (2020) A paper. J." in text
+        assert "https://doi.org/10.a/x" in text
+        assert "1 of 1 BioProjects" in text
+
+    def test_two_citations_both_render(self):
+        from congen.tools.readme.blocks import references
+
+        entry = self._entry(
+            "PRJNA1",
+            dois=["10.a/x", "10.b/y"],
+            references={"10.a/x": "First paper", "10.b/y": "Second paper"},
+        )
+        text = "\n".join(references.render(self._context([entry], declared=["PRJNA1"])).lines)
+        assert "First paper" in text and "Second paper" in text
+
+    def test_an_unreviewed_bioproject_still_gets_a_row(self):
+        """The gap is what gets it filled, so it must be visible."""
+        from congen.tools.readme.blocks import references
+
+        text = "\n".join(references.render(self._context(declared=["PRJNA_NEW"])).lines)
+        assert "PRJNA_NEW" in text
+        assert "citation not yet reviewed" in text
+        assert "0 of 1 BioProjects" in text
+
+    def test_a_not_found_bioproject_says_so(self):
+        from congen.core.metadata.citations import Status
+        from congen.tools.readme.blocks import references
+
+        entry = self._entry("PRJNA1", status=Status.NOT_FOUND)
+        text = "\n".join(references.render(self._context([entry], declared=["PRJNA1"])).lines)
+        assert "no publication found" in text
+
+    def test_coverage_counts_samples_when_the_sra_mapping_is_present(self):
+        """One uncited project carrying forty samples matters more than one
+        carrying a single sample, so coverage is measured in samples."""
+        from congen.tools.readme.blocks import references
+
+        sheet_input = None
+        ctx = self._context(declared=[])
+        sheet_input = ctx.species.sheet.rows[0].input
+        cited = self._entry(
+            "PRJ_CITED", dois=["10.a/x"], references={"10.a/x": "Paper"}
+        )
+        ctx = self._context(
+            [cited],
+            sra={sheet_input: [{"run": "SRR1", "biosample": "S1", "bioproject": "PRJ_CITED"}]},
+            declared=["PRJ_CITED", "PRJ_UNCITED"],
+        )
+        text = "\n".join(references.render(ctx).lines)
+        assert "Citations are recorded for 1 of 1 samples" in text
+        assert "1 of 2 BioProjects" in text
+
+    def test_the_pipeline_line_names_what_is_missing(self):
+        """Silence would let the tool citations stay missing forever."""
+        from congen.tools.readme.blocks import references
+
+        text = "\n".join(references.render(self._context(declared=["PRJNA1"])).lines)
+        assert "not recorded yet" in text
+        assert "tool_citations.yaml" in text
+
+    def test_a_blocked_block_never_prints_a_bioproject(self):
+        """A wrong list with a warning above it still gets copy-pasted."""
+        from congen.tools.readme.blocks import references
+
+        blocked = blocked_context()
+        object.__setattr__(blocked, "citations", None)
+        text = "\n".join(references.render(blocked).lines)
+        assert "PRJ" not in text
+        assert "cannot yet be cited" in text
