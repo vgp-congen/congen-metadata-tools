@@ -1,13 +1,15 @@
 """``congen readme`` — the command line.
 
-Phase 1 implements `--refresh` only: the network pass that writes
-`dataset.json`. Rendering arrives in Phase 3. A bare invocation says so
-rather than doing something surprising.
+The network/pure split is at the CLI, not just inside the code:
 
-The network/pure split is at the CLI deliberately, not just inside the
-code. `--refresh` and a bare render are separate invocations so CI can
-run them as separate jobs, on separate triggers, with separate
-permissions, without any code changing.
+    congen readme --refresh   network, writes dataset.json, renders nothing
+    congen readme             offline, writes README.md
+    congen readme --check     offline, writes nothing, exit 1 if stale
+
+Three invocations become three CI jobs on three triggers with three sets
+of permissions, and no code changes to get there. `--refresh` deliberately
+does not go on to render: keeping them separate is what makes the offline
+one runnable in a job with no network egress at all.
 """
 
 from __future__ import annotations
@@ -22,12 +24,12 @@ import click
 from congen.core.cache import Cache
 from congen.core.metadata.discovery import MetadataRootNotFound, SpeciesRepo
 from congen.core.metadata.writers import would_change
-
 from congen.core.validation_record import load_record as load_validation
 
-from .gate import Mode, evaluate
+from .gate import evaluate
 from .harvest import Harvester
 from .record import RECORD_JSON, DatasetRecord, load_record
+from .render import OUTPUT_NAME, build_context, write_document, would_change_document
 
 DEFAULT_WORKERS = 6
 
@@ -51,6 +53,30 @@ def _select(repo: SpeciesRepo, targets: tuple[str, ...], all_species: bool, clad
     return [repo.load(target) for target in targets]
 
 
+def _resolve(
+    targets: tuple[str, ...],
+    all_species: bool,
+    clade: str | None,
+    metadata_root: Path | None,
+):
+    try:
+        repo = SpeciesRepo(metadata_root) if metadata_root else SpeciesRepo.discover()
+        species = _select(repo, targets, all_species, clade)
+    except (MetadataRootNotFound, FileNotFoundError, ValueError) as exc:
+        click.echo(f"{exc}", err=True)
+        sys.exit(EXIT_MISUSE)
+    if not species:
+        # Selecting nothing and exiting 0 would let a CI job with a wrong
+        # --metadata-root pass vacuously.
+        click.echo(
+            f"no species found under {repo.species_root}"
+            + (f" for clade {clade!r}" if clade else ""),
+            err=True,
+        )
+        sys.exit(EXIT_MISUSE)
+    return repo, species
+
+
 @click.command("readme")
 @click.argument("targets", nargs=-1)
 @click.option("--all", "all_species", is_flag=True, help="Every species in the repo.")
@@ -63,7 +89,13 @@ def _select(repo: SpeciesRepo, targets: tuple[str, ...], all_species: bool, clad
 @click.option(
     "--refresh",
     is_flag=True,
-    help="Network: re-harvest GenomeArk, NCBI and the QC tables into dataset.json.",
+    help="Network: re-harvest into dataset.json. Renders nothing.",
+)
+@click.option(
+    "--check",
+    "check_only",
+    is_flag=True,
+    help="Offline: exit 1 if regenerating would change anything. Writes nothing.",
 )
 @click.option(
     "--json",
@@ -71,59 +103,65 @@ def _select(repo: SpeciesRepo, targets: tuple[str, ...], all_species: bool, clad
     type=click.Path(path_type=Path),
     help="Write a machine-readable summary of what changed here.",
 )
-@click.option("--workers", type=int, default=DEFAULT_WORKERS, show_default=True)
-@click.option("--no-cache", is_flag=True, help="Bypass the on-disk cache.")
-@click.option("--dry-run", is_flag=True, help="With --refresh: harvest but write nothing.")
+@click.option(
+    "--output-name",
+    default=OUTPUT_NAME,
+    show_default=True,
+    help="Name of the generated document.",
+)
 @click.option(
     "--gate-report",
     is_flag=True,
     help="Offline: which species would render fully, and why the rest would not.",
 )
+@click.option("--workers", type=int, default=DEFAULT_WORKERS, show_default=True)
+@click.option("--no-cache", is_flag=True, help="Bypass the on-disk cache.")
+@click.option("--dry-run", is_flag=True, help="With --refresh: harvest but write nothing.")
 def readme(
     targets: tuple[str, ...],
     all_species: bool,
     clade: str | None,
     metadata_root: Path | None,
     refresh: bool,
+    check_only: bool,
     json_path: Path | None,
+    output_name: str,
+    gate_report: bool,
     workers: int,
     no_cache: bool,
     dry_run: bool,
-    gate_report: bool,
 ) -> None:
     """Generate a per-species README.md in congen-metadata."""
     if gate_report:
         _gate_report(targets, all_species, clade, metadata_root)
         return
-    if not refresh:
-        click.echo(
-            "congen readme currently implements --refresh only; rendering lands "
-            "in phase 3. See docs/readme-design.md.",
-            err=True,
-        )
-        sys.exit(EXIT_MISUSE)
 
     if not targets and not all_species and not clade:
         click.echo("nothing selected: name a species, or pass --all.", err=True)
         sys.exit(EXIT_MISUSE)
 
-    try:
-        repo = SpeciesRepo(metadata_root) if metadata_root else SpeciesRepo.discover()
-        species = _select(repo, targets, all_species, clade)
-    except (MetadataRootNotFound, FileNotFoundError, ValueError) as exc:
-        click.echo(f"{exc}", err=True)
-        sys.exit(EXIT_MISUSE)
+    _repo, species = _resolve(targets, all_species, clade, metadata_root)
 
-    if not species:
-        # Selecting nothing and exiting 0 would let a CI job with a wrong
-        # --metadata-root pass vacuously.
-        click.echo(
-            f"no species found under {repo.species_root}"
-            + (f" for clade {clade!r}" if clade else ""),
-            err=True,
+    if refresh:
+        _refresh(
+            species, workers=workers, no_cache=no_cache, dry_run=dry_run, json_path=json_path
         )
-        sys.exit(EXIT_MISUSE)
+    else:
+        _render(
+            species,
+            vgp=_repo.vgp_list,
+            output_name=output_name,
+            check_only=check_only,
+            json_path=json_path,
+        )
 
+
+# -- the network pass ------------------------------------------------------
+
+
+def _refresh(
+    species, *, workers: int, no_cache: bool, dry_run: bool, json_path: Path | None
+) -> None:
     cache = Cache(enabled=not no_cache)
     results: list[tuple[str, DatasetRecord, bool]] = []
 
@@ -141,12 +179,8 @@ def readme(
         return entry.key, record, record.write_json(path)
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        for result in pool.map(one, species):
-            results.append(result)
-
-    results.sort(key=lambda r: r[0])
-    changed = [key for key, _, did in results if did]
-    noted = [(key, record.notes) for key, record, _ in results if record.notes]
+        results.extend(pool.map(one, species))
+    results.sort(key=lambda row: row[0])
 
     for key, record, did in results:
         state = "published" if record.published else "no data"
@@ -159,41 +193,120 @@ def readme(
             f"{record.count_of():4d} objects  {mark}"
         )
 
+    noted = [(key, record.notes) for key, record, _ in results if record.notes]
     if noted:
         click.echo("")
         for key, notes in noted:
             for note in notes:
                 click.echo(f"note  {key}: {note}")
 
+    changed = [key for key, _, did in results if did]
     click.echo("")
     click.echo(
         f"{len(results)} species · {sum(1 for _, r, _ in results if r.published)} published "
         f"· {len(changed)} {'would change' if dry_run else 'written'}"
     )
+    if json_path:
+        _write_json(
+            json_path,
+            {
+                "harvested": [
+                    {
+                        "subject": key,
+                        "published": record.published,
+                        "accession": record.accession,
+                        "samples": len(record.samples),
+                        "objects": record.count_of(),
+                        "changed": did,
+                        "notes": record.notes,
+                    }
+                    for key, record, did in results
+                ]
+            },
+        )
+    sys.exit(EXIT_OK)
+
+
+# -- the offline pass ------------------------------------------------------
+
+
+def context_for(entry, vgp=None):
+    """Assemble a render context from local files only."""
+    dataset = load_record(entry.path / RECORD_JSON) or DatasetRecord(subject=entry.key)
+    record = load_validation(entry.path / "validation.json")
+    verdict = evaluate(entry.path, record, harvested_accession=dataset.accession)
+    return build_context(entry, dataset, verdict, record, vgp=vgp)
+
+
+def _render(
+    species, *, vgp=None, output_name: str, check_only: bool, json_path: Path | None
+) -> None:
+    rows = []
+    for entry in species:
+        context = context_for(entry, vgp)
+        path = entry.path / output_name
+        did = (
+            would_change_document(context, path)
+            if check_only
+            else write_document(context, path)
+        )
+        rows.append((entry.key, context, did))
+
+    for key, context, did in rows:
+        mode = str(context.verdict.mode)
+        cited = "cited" if context.verdict.cited else "uncited"
+        mark = ("STALE" if did else "current") if check_only else ("written" if did else "unchanged")
+        click.echo(f"{key:44} {mode:10} {cited:8} {mark}")
+
+    changed = [key for key, _, did in rows if did]
+    full = sum(1 for _, c, _ in rows if c.verdict.is_full)
+    cited = sum(1 for _, c, _ in rows if c.verdict.is_full and c.verdict.cited)
+    click.echo("")
+    click.echo(
+        f"{len(rows)} species · {cited} full and cited · {full - cited} citations blocked "
+        f"· {len(rows) - full} truncated · {len(changed)} "
+        f"{'out of date' if check_only else 'written'}"
+    )
 
     if json_path:
-        json_path.write_text(
-            json.dumps(
-                {
-                    "harvested": [
-                        {
-                            "subject": key,
-                            "published": record.published,
-                            "accession": record.accession,
-                            "samples": len(record.samples),
-                            "objects": record.count_of(),
-                            "changed": did,
-                            "notes": record.notes,
-                        }
-                        for key, record, did in results
-                    ]
-                },
-                indent=2,
-            )
-            + "\n"
+        _write_json(
+            json_path,
+            {
+                "documents": [
+                    {
+                        "subject": key,
+                        "mode": str(context.verdict.mode),
+                        "cited": context.verdict.cited,
+                        "provenance": (
+                            str(context.verdict.provenance)
+                            if context.verdict.provenance
+                            else None
+                        ),
+                        "blockers": [str(b.code) for b in context.verdict.blockers],
+                        "changed": did,
+                    }
+                    for key, context, did in rows
+                ]
+            },
         )
 
+    if check_only and changed:
+        click.echo("", err=True)
+        click.echo(
+            f"{len(changed)} document(s) out of date; run `congen readme` to regenerate:",
+            err=True,
+        )
+        for key in changed:
+            click.echo(f"  {key}", err=True)
+        sys.exit(EXIT_PROBLEM)
     sys.exit(EXIT_OK)
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+# -- the gate report -------------------------------------------------------
 
 
 def _gate_report(
@@ -209,30 +322,13 @@ def _gate_report(
     the suite would fail for the right reasons. The suite asserts the
     logic; this shows the numbers.
     """
-    try:
-        repo = SpeciesRepo(metadata_root) if metadata_root else SpeciesRepo.discover()
-        species = _select(repo, targets, all_species or not targets, clade)
-    except (MetadataRootNotFound, FileNotFoundError, ValueError) as exc:
-        click.echo(f"{exc}", err=True)
-        sys.exit(EXIT_MISUSE)
-    if not species:
-        click.echo("no species found", err=True)
-        sys.exit(EXIT_MISUSE)
+    repo, species = _resolve(targets, all_species or not targets, clade, metadata_root)
+    rows = [(entry.key, context_for(entry, repo.vgp_list).verdict) for entry in species]
 
-    rows = []
-    for entry in species:
-        dataset = load_record(entry.path / RECORD_JSON)
-        verdict = evaluate(
-            entry.path,
-            load_validation(entry.path / "validation.json"),
-            harvested_accession=dataset.accession if dataset else None,
-        )
-        rows.append((entry.key, verdict))
-
-    full = [(k, v) for k, v in rows if v.is_full]
-    cited = [(k, v) for k, v in full if v.cited]
-    blocked = [(k, v) for k, v in full if not v.cited]
-    truncated = [(k, v) for k, v in rows if not v.is_full]
+    full = [row for row in rows if row[1].is_full]
+    cited = [row for row in full if row[1].cited]
+    blocked = [row for row in full if not row[1].cited]
+    truncated = [row for row in rows if not row[1].is_full]
 
     if truncated:
         click.echo("truncated — no dataset to describe:")
@@ -243,12 +339,14 @@ def _gate_report(
         click.echo("full, citations blocked:")
         for key, verdict in blocked:
             fired = ",".join(verdict.fired) or "nothing fired"
-            unsound = ",".join(
-                f"{s.check}={s.outcome}" for s in verdict.unsound if s.check not in verdict.fired
+            consequent = ",".join(
+                f"{s.check}={s.outcome}"
+                for s in verdict.unsound
+                if s.check not in verdict.fired
             )
             click.echo(
                 f"  {key:42} {str(verdict.provenance):8} fired={fired}"
-                + (f"  consequent={unsound}" if unsound else "")
+                + (f"  consequent={consequent}" if consequent else "")
             )
         click.echo("")
     click.echo(

@@ -1030,13 +1030,46 @@ and in `congen readme --gate-report`, which prints them offline on demand.
 That is the same lesson the validator learned about `G011` and S3
 `LastModified`: assert the property, not the incidental value.
 
-**Phase 3 — the renderer.** Every block but References, the single managed region, the mode
-transition, `--check`, `--json`, variadic targets, exit codes, and the full test
-discipline below. Settles the manifest question from three real scales:
-`apteryx-mantelli` (19 samples), `esox-lucius` (65), `taeniopygia-guttata` (232).
-The 79 documents are committed here rather than held back until citations land —
-the repository is private, and collaborators reviewing work in progress and
-finding errors is worth more than avoiding a second corpus-wide diff.
+**Phase 3 — the renderer. Done.** Every block but References, the single managed
+region, the mode transition, `--check`, `--json`, variadic targets, exit codes.
+79 documents written and committed rather than held back until citations land —
+the repository is private, and collaborators finding errors is worth more than
+avoiding a second corpus-wide diff.
+
+**The manifest question is settled, and the answer is that it does not scale
+with the cohort.** Rendered at three real sizes:
+
+| species | samples | lines | secondary files |
+|---|---:|---:|---:|
+| `apteryx-mantelli` | 19 | 131 | 10 |
+| `esox-lucius` | 65 | 145 | 10 |
+| `pungitius-pungitius` | 150 | 134 | 10 |
+
+Document length is flat, for a structural reason: the non-`bams/` object count is
+constant at about forty across the corpus, and `bams/` — the only part that grows
+— is already a single rollup row. So four primary rows plus a collapsed ten holds
+at every scale and needs no further thought. (`taeniopygia-guttata` could not
+serve as the large case after all: 215 samples in the sheet, but no published
+data, so it truncates.)
+
+**Four defects in the prose, every one of them found by reading rendered output
+rather than by a test.** Worth recording because the pattern will recur:
+
+- The sheet/BAM/VCF disagreement line was reported for *unpublished* species —
+  "215 in the sheet · 0 BAMs · None in the VCF" — which reintroduced the exact
+  bug this design records as fixed for `S002`/`S003`. During an absent or partial
+  upload the comparison measures how far the upload got, not whether the metadata
+  is right. It is now guarded on a complete publication, the same guard for the
+  same reason.
+- The gate-B provenance line appeared in truncated documents, pointing at a
+  `#references` anchor that only exists in a full one. Gate B is now surfaced
+  only where there is a References section to reach.
+- `sturnus-vulgaris` read "This is an expected state" directly above "validation
+  found errors": two blurbs written for different situations colliding. Blockers
+  now have a precedence order, so one leads and the rest are named compactly.
+- The truncated lead called `anser-albifrons` "planned or in-progress" when it
+  has a complete publication and a real defect. There are two leads now, chosen
+  by the leading blocker.
 
 References is **omitted at this phase, not stubbed with a gate-B warning** — the
 bioproject list is not broken for these species, the tool simply does not do

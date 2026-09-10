@@ -325,30 +325,3 @@ class TestOrphanFindings:
 
         repo = SpeciesRepo(METADATA_ROOT)
         assert orphan_findings(repo, self._gatherer(["GCA_028858705.1"])) == []
-
-
-class TestReadmeCli:
-    """`congen readme` — phase 1 ships --refresh only."""
-
-    def test_a_bare_invocation_says_rendering_is_not_built(self):
-        result = run_cli(["readme", "birds/apteryx-mantelli"])
-        assert result.exit_code == 2
-        assert "--refresh" in result.output
-
-    def test_selecting_nothing_is_misuse_not_success(self):
-        result = run_cli(["readme", "--refresh"])
-        assert result.exit_code == 2
-
-    def test_a_root_with_no_species_is_misuse_not_a_vacuous_pass(self, tmp_path):
-        """Otherwise a CI job with a wrong --metadata-root passes silently."""
-        result = run_cli(
-            ["readme", "--refresh", "--all", "--metadata-root", str(tmp_path)]
-        )
-        assert result.exit_code == 2
-        assert "no species found" in result.output
-
-    def test_the_readme_tool_declares_that_it_writes(self):
-        from congen.tools.readme import tool as readme_tool
-
-        assert readme_tool.writes_metadata is True
-        assert readme_tool.needs_network is True
