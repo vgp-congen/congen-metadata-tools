@@ -1199,10 +1199,46 @@ accession and the validator's `--check-sra` run had already paid for it.
 From here, curating 298 rows is human work that proceeds in parallel with
 Phase 5. The queue is ranked by samples affected, worst first.
 
-**Phase 5 — the References block.** Joins the curated file: the bioproject table, the two
-blocked renderings, the coverage line, the pending assembly entry.
+**Phase 5 — the References block. Done.** Reads the curated files, so the render
+stays offline. A **list** rather than a table: a BioProject can carry two
+citations, and long titles beside long references make a four-column table
+unreadable.
 
-**Phase 6 — CI workflows.** Shared with the validator's deferred milestone 7.
+An unreviewed BioProject still gets a row saying so. Hiding it would hide the
+gap, and the gap is what gets it filled — which is what the coverage line counts
+against, in samples as well as projects.
+
+`tool_citations.yaml` is still entirely `pending`, so the pipeline line names
+snpArcher and GATK and says the citations are not recorded yet. Silence would
+let them stay missing.
+
+53 of 79 documents changed; the 17 with citations blocked and the 9 truncated
+have no block to change. `tautogolabrus-adspersus` is the first fully cited
+species, at 150 of 150 samples. `hirundo-rustica` keeps the blocked rendering
+despite three confirmed citations, because `G017` means its BioProject list may
+be incomplete — the gate behaving correctly, and one `aws s3 cp` from resolving.
+
+**Phase 6 — CI workflows. Done, and running.** `tests.yml` in the tools repo;
+`rebuild.yml` in congen-metadata, triggered by pushes that touch source data and
+by a manual button for use after a GenomeArk upload. Generated files are absent
+from the path filter, so the bot's own commit cannot retrigger it — the loop
+guard is structural. The job ends by asserting the rebuild converged.
+
+Two things CI found on its first two runs, both real:
+
+- Bare `pytest` did not work at all. The suite imports `tests.conftest`, which
+  needs the repository root importable; `python -m pytest` puts the working
+  directory on `sys.path` and bare `pytest` does not. The documented command was
+  the broken one.
+- `validate` returned a different exit code depending on where it ran, because
+  root discovery preceded argument validation and a checkout is discoverable
+  from inside the source tree. Argument checks now come first.
+
+And one design error in the workflow itself: it treated `validate`'s exit 1 as a
+failure. Exit 1 means *error findings exist*, which is a fact about the metadata
+— the corpus has four, awaiting human fixes — and the documents must still be
+regenerated, since the generated README is where those errors get announced.
+Exit 2 and above still fail the job.
 
 ### Constraints held throughout
 
