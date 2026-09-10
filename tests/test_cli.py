@@ -101,6 +101,59 @@ class TestValidateCli:
         assert result.exit_code == 2
         assert "selected no checks" in result.output
 
+    def test_a_root_with_no_species_is_misuse_not_a_vacuous_pass(self, offline, tmp_path):
+        """Otherwise a CI job with a wrong --metadata-root passes silently.
+
+        The stray tree is part of the defect, not a detail: --write-reports
+        pointed at a root that holds no species used to create it, which is
+        what made the mistake look like a successful run.
+        """
+        missing = tmp_path / "congen-metadata"
+        result = CliRunner().invoke(
+            validate,
+            ["--metadata-root", str(missing), "--all", "--write-reports"],
+        )
+        assert result.exit_code == 2
+        assert "no species found" in result.output
+        assert str((missing / "species").resolve()) in result.output
+        assert not missing.exists()
+
+    def test_a_clade_matching_nothing_is_refused(self, offline):
+        result = CliRunner().invoke(
+            validate,
+            ["--metadata-root", str(METADATA_ROOT), "--all", "--clade", "sponges"],
+        )
+        assert result.exit_code == 2
+        assert "no species found" in result.output
+        assert "'sponges'" in result.output
+
+    def test_stale_selecting_nothing_is_success_over_a_populated_repo(
+        self, offline, monkeypatch
+    ):
+        """An empty --stale selection is good news, but only here.
+
+        Nothing pending means every report is current — a claim that needs
+        reports to exist, hence the pairing with the test below.
+        """
+        monkeypatch.setattr(
+            "congen.tools.validate.cli.stale_species", lambda *a, **k: []
+        )
+        result = CliRunner().invoke(
+            validate, ["--metadata-root", str(METADATA_ROOT), "--stale"]
+        )
+        assert result.exit_code == 0
+        assert "nothing to revalidate" in result.output
+
+    def test_stale_selecting_nothing_over_an_empty_root_is_misuse(
+        self, offline, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            "congen.tools.validate.cli.stale_species", lambda *a, **k: []
+        )
+        result = CliRunner().invoke(validate, ["--metadata-root", str(tmp_path), "--stale"])
+        assert result.exit_code == 2
+        assert "no species found" in result.output
+
     def test_clean_species_exits_zero(self, offline):
         result = CliRunner().invoke(
             validate,

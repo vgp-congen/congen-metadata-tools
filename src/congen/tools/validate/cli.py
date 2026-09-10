@@ -183,7 +183,10 @@ def validate(
         )
         species_list = [s for s, _ in pending]
         stale_reasons = {s.key: v.reason or "" for s, v in pending}
-        if not species_list:
+        if not species_list and repo.species_dirs():
+            # Empty because every report is current — which is only good
+            # news if the repo holds species at all. An empty root falls
+            # through to the guard below instead of passing here.
             click.echo("nothing to revalidate: every report is current")
             sys.exit(0)
     elif all_species:
@@ -193,6 +196,17 @@ def validate(
             species_list = [repo.load(target) for target in targets]
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
+
+    if not species_list:
+        # Validating nothing and exiting 0 would let a CI job with a
+        # mistyped or unset --metadata-root pass vacuously. Refused here,
+        # ahead of any gathering, orphan detection or report writing:
+        # --write-reports must not create a tree under a root that holds
+        # no species, which is what made the mistake look like a run.
+        raise click.UsageError(
+            f"no species found under {repo.species_root}"
+            + (f" for clade {clade!r}" if clade else "")
+        )
 
     gatherer = ContextGatherer(
         cache=gatherer_cache,
