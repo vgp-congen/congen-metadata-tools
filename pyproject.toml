@@ -33,6 +33,13 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The suite imports shared fixtures as `tests.conftest`, which needs the
+# repository root importable. Without this, bare `pytest` fails to
+# collect while `python -m pytest` succeeds — because the latter puts the
+# working directory on sys.path and the former does not. That difference
+# hid the problem locally and CI found it immediately: the command the
+# README documents was the broken one.
+pythonpath = ["."]
 # The suite must run offline. Tests that would touch the network are marked
 # and deselected by default.
 addopts = "-m 'not network and not corpus'"
