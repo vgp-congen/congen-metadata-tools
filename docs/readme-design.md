@@ -356,7 +356,7 @@ Under that rule it spans five remote sources:
 | QC tables | `qc_report.tsv`, `individuals.het`, `individuals.imiss`, `coverage_thresholds.tsv` |
 | VCF/BAM headers (ranged GET) | recorded caller version, ploidy, het prior, contig list |
 | NCBI | organism name, common name, assembly name and level, paired accession |
-| SRA | run → bioproject mapping, for sample-level citation coverage |
+| SRA | `sra`: sheet input accession → the runs it holds, each with its biosample and bioproject. The join back to samples is local (the sheet already maps sample to input), so that join is the consumer's job |
 
 It is per-species for discoverability, matching `validation.json` — but its
 contents are keyed by **accession**, so the file names the accession it was
@@ -749,12 +749,23 @@ But several accessions return more than one hit, and nothing in the response
 distinguishes the paper that *generated* the data from one that *reused* it. So
 the lookup produces **candidates, not answers.**
 
-### Why a curated file, and one correction
+### Why a curated file, and two corrections
 
 An earlier draft argued the file's advantage was that bioprojects recur across
-species. **They do not**: 208 distinct bioprojects across 219 total mentions, and
-only 6 are cited by more than one species (maximum 4). The file is essentially
-one row per bioproject and the curation burden is 208 rows.
+species. **They do not**: only 6 are cited by more than one species (maximum 4).
+The file is essentially one row per bioproject.
+
+**And there are 298 of them, not 208.** The `README.txt` files cite 208 distinct
+bioprojects between them; the SRA mapping in `dataset.json` attributes runs to
+296; the union is 298. Measured on the corpus, of the 88-project difference
+**87 are reachable only through the 22 species that have no `README.txt` at
+all**, and the remaining 3 are exactly the `E002` cases.
+
+That reframes `G017`. Those species are not merely missing a file — they conceal
+87 bioprojects' worth of uncredited data generators, which is the real weight
+behind treating a missing README as disqualifying for publication. It is also why
+the review queue is built from the **union** of what a README declares and what
+SRA says contributed: either source alone builds the wrong queue.
 
 It is still right, for the reasons that survive: a human can correct it, it makes
 render deterministic and offline, and it makes the gaps visible and countable.
@@ -786,10 +797,28 @@ congen citations --report      # offline: the gaps, ranked by samples affected
 congen readme                  # offline: joins against the curated file
 ```
 
-`--propose` writes candidates to a staging file it owns and **never touches the
-curated one.** It fetches the project title and submitter from `esummary`
-alongside each candidate, so a bioproject with no publication still gets a
-human-readable line rather than a bare accession.
+#### `--propose` writes into the curated file — a reversal
+
+An earlier draft had `--propose` write a staging file it owned, so a tool could
+never touch a human decision. **Reversed once the corpus was measured.** With 298
+bioprojects, a staging file means a reviewer copying rows between two 298-row
+CSVs for no benefit, and the guard that actually matters is enforceable directly.
+Two rules, both tested:
+
+1. A row whose status is `confirmed` or `none` is **never touched**. A human
+   ruled on it, and a lookup is not entitled to reopen that — which is what makes
+   `none` durable rather than a state the next refresh overwrites.
+2. On an `unreviewed` row a proposal fills **empty fields only**, so a
+   half-finished hand edit survives a refresh.
+
+A proposal never sets a status. Every row stays `unreviewed` until a human
+changes it, so the tool proposes and cannot decide.
+
+It fetches the project title and submitter from `esummary` alongside each
+candidate, so a bioproject with no publication still gets a human-readable line
+rather than a bare accession. That pays for itself immediately: `PRJNA1462765` is
+titled "…bDryPub1, **seq**" and the `README.txt` cites "…bDryPub1, **pri**", so a
+reviewer can see the `E002`/`E003` mistake without leaving the file.
 
 `--report` is the review queue: bioproject, status, species, samples affected,
 worst-first. Sample-level attribution needs tier 5's `RunIndex` — the ~85s
@@ -1078,9 +1107,19 @@ Because these documents are being committed for review, the omission carries one
 honest line naming itself as not yet generated: a collaborator seeing no
 References section must not conclude that citations were dropped by design.
 
-**Phase 4 — `congen citations`.** The curated file schema and loaders,
-`--propose` over Europe PMC through `core.http`, `--report`. From here, curating
-208 rows is human work that proceeds in parallel with Phase 5.
+**Phase 4 — `congen citations`. Done.** The curated file schema and loaders,
+`--propose` over Europe PMC through `core.http`, `--report`. Seeded: 298 rows,
+all `unreviewed`, 182 of them (61%) carrying a candidate DOI — close to the 68%
+the 25-accession probe predicted. Titles and submitters resolved for all 298.
+
+`dataset.json` gained the `sra` field in this phase, which Phase 1 should have
+included: the design already said the run → bioproject mapping is committed so
+`--report` can rank offline, and the Phase 1 schema omitted it. Re-harvesting
+cost 27 seconds rather than the expected ~85, because `Sra.lookup` caches per
+accession and the validator's `--check-sra` run had already paid for it.
+
+From here, curating 298 rows is human work that proceeds in parallel with
+Phase 5. The queue is ranked by samples affected, worst first.
 
 **Phase 5 — the References block.** Joins the curated file: the bioproject table, the two
 blocked renderings, the coverage line, the pending assembly entry.

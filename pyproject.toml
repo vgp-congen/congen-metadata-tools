@@ -26,6 +26,7 @@ congen = "congen.core.cli:main"
 [project.entry-points."congen.tools"]
 validate = "congen.tools.validate:tool"
 readme   = "congen.tools.readme:tool"
+citations = "congen.tools.citations:tool"
 
 [tool.setuptools.packages.find]
 where = ["src"]

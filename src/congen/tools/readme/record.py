@@ -113,6 +113,17 @@ class DatasetRecord:
     #: summarises them, so a change of mind about what to show never
     #: requires a re-harvest. That is the whole point of the split.
     samples: dict[str, dict] = field(default_factory=dict)
+    #: Sheet input accession -> the runs NCBI SRA says it holds, each with
+    #: its biosample and bioproject.
+    #:
+    #: Remote, and therefore here: which bioproject a run belongs to
+    #: cannot be recomputed from anything in the repository. The join back
+    #: to samples is local — the sheet already maps sample to input — so
+    #: that join is the consumer's job, not this record's.
+    #:
+    #: Present for unpublished species too. A bioproject list matters
+    #: whether or not a pipeline has run.
+    sra: dict[str, list[dict]] = field(default_factory=dict)
     #: Non-fatal problems met while harvesting, so a thin record explains
     #: itself rather than looking like a clean one.
     notes: list[str] = field(default_factory=list)
@@ -142,6 +153,32 @@ class DatasetRecord:
             for path in self.objects
             if not prefixes or any(path.startswith(p) for p in prefixes)
         )
+
+    @property
+    def bioprojects(self) -> list[str]:
+        """Every bioproject the SRA lookup attributed a run to."""
+        return sorted(
+            {
+                run["bioproject"]
+                for runs in self.sra.values()
+                for run in runs
+                if run.get("bioproject")
+            }
+        )
+
+    def bioprojects_by_sample(self, sheet) -> dict[str, list[str]]:
+        """Sample -> bioprojects, joining the SRA lookup to the sheet.
+
+        The join lives here rather than in a stored field because half of
+        it is local: the sheet already maps sample to input, and storing a
+        second copy of that is only a way for the two to disagree.
+        """
+        out: dict[str, set[str]] = {}
+        for row in sheet.rows:
+            for run in self.sra.get(row.input, ()):
+                if run.get("bioproject"):
+                    out.setdefault(row.sample_id, set()).add(run["bioproject"])
+        return {sample: sorted(projects) for sample, projects in out.items()}
 
     def metric(self, name: str) -> dict[str, float]:
         """Sample -> value for one QC metric, omitting samples lacking it."""

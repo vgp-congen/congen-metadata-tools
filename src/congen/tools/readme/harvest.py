@@ -21,6 +21,7 @@ from congen.core.metadata.models import SpeciesMetadata
 from congen.core.remote.genomeark import BASE_URL, GenomeArk
 from congen.core.remote.headers import HeaderError, read_vcf_header
 from congen.core.remote.ncbi import Ncbi
+from congen.core.remote.sra import Sra
 from congen.core.remote.qc import (
     COVERAGE_THRESHOLDS_FILE,
     HET_FILE,
@@ -83,6 +84,7 @@ THRESHOLDS_PATH = f"{CALLABLE_SITES_DIR}/{COVERAGE_THRESHOLDS_FILE}"
 class Harvester:
     genomeark: GenomeArk
     ncbi: Ncbi
+    sra: Sra | None = None
     tool_version: str = ""
     #: Collected per species and copied onto the record, so a thin record
     #: says why it is thin instead of looking like a clean one.
@@ -92,7 +94,10 @@ class Harvester:
     def build(cls, cache: Cache | None = None, *, tool_version: str = "") -> Harvester:
         shared = cache or Cache()
         return cls(
-            genomeark=GenomeArk(shared), ncbi=Ncbi(shared), tool_version=tool_version
+            genomeark=GenomeArk(shared),
+            ncbi=Ncbi(shared),
+            sra=Sra(shared),
+            tool_version=tool_version,
         )
 
     def harvest(self, species: SpeciesMetadata) -> DatasetRecord:
@@ -113,6 +118,10 @@ class Harvester:
             self.notes.append(f"GenomeArk listing failed: {exc}")
             resolved = None
 
+        # Before the early return: a bioproject list matters whether or
+        # not a pipeline has run.
+        self._sra(record, species)
+
         record.accession = resolved or declared
         if resolved is None:
             self.notes.append(
@@ -130,6 +139,38 @@ class Harvester:
         self._vcf(record)
         record.notes = list(self.notes)
         return record
+
+    def _sra(self, record: DatasetRecord, species: SpeciesMetadata) -> None:
+        if self.sra is None:
+            return
+        accessions = sorted(
+            {row.input for row in species.sheet.rows if row.is_sra_accession}
+        )
+        if not accessions:
+            return
+        try:
+            index = self.sra.lookup(accessions)
+        except Exception as exc:  # noqa: BLE001 - eutils is not always up
+            self.notes.append(f"NCBI SRA lookup failed: {exc}")
+            return
+        for accession in accessions:
+            runs = index.runs_for(accession)
+            if not runs:
+                continue
+            record.sra[accession] = [
+                {
+                    "run": run.run,
+                    "biosample": run.biosample,
+                    "bioproject": run.bioproject,
+                }
+                for run in runs
+            ]
+        unresolved = [a for a in accessions if a not in record.sra]
+        if unresolved:
+            self.notes.append(
+                f"NCBI SRA resolved no runs for {len(unresolved)} of "
+                f"{len(accessions)} sheet inputs"
+            )
 
     # -- object inventory ---------------------------------------------------
 
