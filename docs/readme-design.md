@@ -1113,10 +1113,13 @@ Neither of these blocks any phase.
 
 ## Open questions
 
-- **Does the primary/secondary split hold at scale?** Phase 0 settled the shape
-  at n=19: four primary rows, `bams/` as one directory row, ten secondary files
-  collapsed. The object *inventory* does not grow with sample count — only
-  `bams/` does, and it is already a single row — so the split should hold at
-  n=232. Worth confirming against `esox-lucius` (65) and `taeniopygia-guttata`
-  (232) in Phase 3, along with whether the two `<details>` blocks still feel
-  right once collaborators have read a few.
+- **Do the two `<details>` blocks earn their place?** Confirmed at every scale
+  that the split holds mechanically — see Phase 3 — but whether collapsing the
+  supplementary facts is the right call, rather than cutting them, is a judgement
+  that wants readers. Deliberately left open until collaborators have read a few
+  of the 79 committed documents.
+- **Is a common name worth adding?** Every `dataset.json` carries
+  `common_name: null`, because `AssemblyInfo` does not read it. The heading is
+  written to use it when present, so this is one field in `remote/ncbi.py` — but
+  it is worth checking first whether the NCBI Datasets response actually supplies
+  one for these assemblies, rather than assuming.
